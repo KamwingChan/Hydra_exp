@@ -5,7 +5,9 @@ An experiment of deploying Hydra on realsense D455, including semantic_inference
 ## Follow [Hydra](https://github.com/MIT-SPARK/Hydra) to finish quick start
 ```bash
 cd ~/catkin_ws
+git clone https://github.com/KamwingChan/Hydra_exp.git
 catkin build kimera_vio_ros -j16
+catkin build semantic_inference_ros
 ```
 ## Launch Method (In seperate terminal)
 Using semantic_inference as semantic input (Mask2former segmenter is under develop)
