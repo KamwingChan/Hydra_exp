@@ -16,9 +16,9 @@ roslaunch realsense2_camera hydra_realsense.launch
 roslaunch kimera_vio_ros kimera_vio_d455.launch 
 ```
 ## Future Work
-- [] cuvslam
-- [] SpatialLM
-- [] Material Perception
+- [ ] cuvslam
+- [ ] SpatialLM
+- [ ] Material Perception
 
 ## Developer tools
 ### using mmlab
