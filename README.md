@@ -1,7 +1,7 @@
 # Hydra_exp
 ## Introduction
 Learning [README.md](https://blog.csdn.net/weixin_49941024/article/details/147166930?utm_medium=distribute.pc_relevant.none-task-blog-2~default~baidujs_utm_term~default-0-147166930-blog-129700568.235^v43^pc_blog_bottom_relevance_base6&spm=1001.2101.3001.4242.1&utm_relevant_index=2)
-An experiment of deploying Hydra on ==realsense D455==, including semantic_inference and kimera_vio modules.
+An experiment of deploying Hydra on ==realsense D455== , including semantic_inference and kimera_vio modules.
 
 ## Follow [Hydra](https://github.com/MIT-SPARK/Hydra) to finish quick start
 ```bash
