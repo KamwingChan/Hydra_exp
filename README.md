@@ -26,13 +26,22 @@ roslaunch kimera_vio_ros kimera_vio_d455.launch
 ## Developer tools
 ### Using [mmlab](https://github.com/open-mmlab/mmdeploy/blob/main/docs/en/04-supported-codebases/mmdet.md#supported-models)
 ```bash
+cd ${YOUR_WS}/mmdeploy
 conda activate openmmlab
 export PYTHONPATH=$(pwd)/build/lib:$PYTHONPATH
 export LD_LIBRARY_PATH=$(pwd)/../mmdeploy-dep/onnxruntime-linux-x64-1.8.1/lib/:$LD_LIBRARY_PATH
+# Building ops for tensort (needed by semantic_inference)
+mkdir build && cd build
+cmake -DMMDEPLOY_TARGET_BACKENDS=trt ..
+make -j$(nproc)
+```
+Then you will see _libmmdeploy_tensorrt_ops.so_ in _lib/_
+```bash
+cp lib/libmmdeploy_tensorrt_ops.so ~/catkin_ws/src/semantic_inference/semantic_inference/tensorrt/libmmdeploy_tensorrt_ops.so
 ```
 ### Using mask2former provided by [MMsegment](https://github.com/open-mmlab/mmsegmentation/tree/main/configs/mask2former)
 ```bash
-cd $YOUR_WS/mmdeploy
+cd ${YOUR_WS}/mmdeploy
 wget https://download.openmmlab.com/mmsegmentation/v0.5/mask2former/mask2former_r50_8xb2-90k_cityscapes-512x1024/mask2former_r50_8xb2-90k_cityscapes-512x1024_20221202_140802-ffd9d750.pth
 python ./tools/deploy.py \
     configs/mmseg/segmentation_onnxruntime_dynamic.py \
