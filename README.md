@@ -37,7 +37,7 @@ make -j$(nproc)
 ```
 Then you will see _libmmdeploy_tensorrt_ops.so_ in _lib/_
 ```bash
-cp lib/libmmdeploy_tensorrt_ops.so ~/catkin_ws/src/semantic_inference/semantic_inference/tensorrt/libmmdeploy_tensorrt_ops.so
+sudo cp lib/libmmdeploy_tensorrt_ops.so /usr/lib/libmmdeploy_tensorrt_ops.so
 ```
 ### Using mask2former provided by [MMsegment](https://github.com/open-mmlab/mmsegmentation/tree/main/configs/mask2former)
 ```bash
