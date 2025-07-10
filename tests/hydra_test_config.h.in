@@ -1,2 +1,0 @@
-#pragma once
-#define HYDRA_PACKAGE_PATH "@PROJECT_SOURCE_DIR@"
