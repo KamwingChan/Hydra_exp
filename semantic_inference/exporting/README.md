@@ -1,0 +1,2 @@
+现在我已经训练完了一个经过Ade20k数据集微调过后的mask2former-r50的语义分割模型(训练目录：~/Mask2Former，最终权重目录：~/catkin_ws/src/semantic_inference/runs/segment/train_mask2former_detectron2/model_final.pth)来替代你所看到的semantic/model里面的hrnet和efficientvit模型。
+我的要求是：1、导出onnx文件，可以给semantic_inference的ros包使用，不知道可不可以参考doc/exporting.md。2、尽量不损失推理性能3、要求给定图片输出onnx推理结果来判断导出结果如何4、用英文注释，只需要告诉我该怎么操作，不用写sh文件

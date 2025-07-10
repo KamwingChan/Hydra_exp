@@ -1,0 +1,21 @@
+---
+input:
+  type: RosInput
+  tf_verbosity: 1
+  clear_queue_on_fail: true
+  tf_lookup:
+    wait_duration_s: 1   
+    buffer_size_s: 60.0     
+    max_tries: 10           
+    verbosity: 3            
+  inputs:
+    left_cam:
+      receiver:
+        type: ClosedSetImageReceiver
+      sensor:
+        type: camera_info
+        min_range: $(arg sensor_min_range)
+        max_range: $(arg sensor_max_range)
+        extrinsics:
+          type: ros
+          sensor_frame: $(arg sensor_frame)

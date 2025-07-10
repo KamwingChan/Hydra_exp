@@ -1,0 +1,40 @@
+<launch>
+    <!-- RealSense相机静态TF配置 -->
+    
+    <!-- 基础坐标系转换：从base_link到相机链接 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="base_to_camera" 
+          args="0.0 0.0 0.0 0.0 0.0 0.0 1.0 base_link camera_link" />
+    
+    <!-- 相机链接到深度帧 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="camera_link_to_depth_frame" 
+          args="0.0 0.0 0.0 0.0 0.0 0.0 1.0 camera_link camera_depth_frame" />
+    
+    <!-- 深度帧到深度光学帧 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="depth_frame_to_depth_optical_frame" 
+          args="0.0 0.0 0.0 -0.5 0.5 -0.5 0.5 camera_depth_frame camera_depth_optical_frame" />
+    
+    <!-- 相机链接到彩色帧 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="camera_link_to_color_frame" 
+          args="0.0 0.0 0.0 0.0 0.0 0.0 1.0 camera_link camera_color_frame" />
+    
+    <!-- 彩色帧到彩色光学帧 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="color_frame_to_color_optical_frame" 
+          args="0.0 0.0 0.0 -0.5 0.5 -0.5 0.5 camera_color_frame camera_color_optical_frame" />
+    
+    <!-- 相机链接到陀螺仪帧 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="camera_link_to_gyro_frame" 
+          args="-0.016 -0.030 0.007 0.0 0.0 0.0 1.0 camera_link camera_gyro_frame" />
+    
+    <!-- 陀螺仪帧到IMU光学帧 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="gyro_frame_to_imu_optical_frame" 
+          args="0.0 0.0 0.0 -0.5 0.5 -0.5 0.5 camera_gyro_frame camera_imu_optical_frame" />
+    
+    <!-- 相机链接到加速度计帧 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="camera_link_to_accel_frame" 
+          args="-0.016 -0.030 0.007 0.0 0.0 0.0 1.0 camera_link camera_accel_frame" />
+    
+    <!-- 加速度计帧到加速度计光学帧 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="accel_frame_to_accel_optical_frame" 
+          args="0.0 0.0 0.0 -0.5 0.5 -0.5 0.5 camera_accel_frame camera_accel_optical_frame" />
+    
+</launch>
