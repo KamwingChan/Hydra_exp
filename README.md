@@ -47,9 +47,9 @@ python ./tools/deploy.py \
     configs/mmseg/segmentation_onnxruntime_dynamic.py \
     ~/workspace/mmsegmentation/configs/mask2former/mask2former_r50_8xb2-160k_ade20k-512x512.py \
     mask2former_r50_8xb2-160k_ade20k-512x512_20221204_000055-2d1f55f1.pth \
-    ~/Mask2Former/1_Color.png \
+    ~/Mask2Former/1_Color.png(Your image path) \
     --work-dir mmdeploy_model/mask2former-ade20k-r50 \
-    --device cpu \
+    --device cuda \
     --show \
     --dump-info
 ```
