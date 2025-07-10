@@ -1,2 +1,0 @@
-#pragma once
-#define HYDRA_USE_GNN @HYDRA_ENABLE_GNN_CXX_VALUE@
