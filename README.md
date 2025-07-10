@@ -5,7 +5,7 @@ An experiment of deploying Hydra on __Realsense D455__, including semantic_infer
 
 ## Follow [Hydra](https://github.com/MIT-SPARK/Hydra) to finish quick start
 ```bash
-cd C
+cd catkin_ws
 git clone https://github.com/KamwingChan/Hydra_exp.git
 catkin build kimera_vio_ros -j16
 catkin build semantic_inference_ros
