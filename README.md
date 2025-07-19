@@ -23,6 +23,7 @@ roslaunch kimera_vio_ros kimera_vio_d455.launch
 - [ ] cuvslam
 - [ ] SpatialLM
 - [ ] Material Perception
+- [ ] Paper
 
 ## Developer tools
 ### Using [mmlab](https://github.com/open-mmlab/mmdeploy/blob/main/docs/en/04-supported-codebases/mmdet.md#supported-models)
