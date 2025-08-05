@@ -20,7 +20,7 @@ roslaunch realsense2_camera hydra_realsense.launch
 roslaunch kimera_vio_ros kimera_vio_d455.launch 
 ```
 ## Future Work
-- [ ] cuvslam
+- [ ] Room Classification
 - [ ] SpatialLM
 - [ ] Material Perception
 - [ ] Paper
