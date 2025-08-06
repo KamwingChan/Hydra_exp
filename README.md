@@ -22,7 +22,7 @@ roslaunch kimera_vio_ros kimera_vio_d455.launch
 ## Future Work
 - [ ] Room Classification
 - [ ] SpatialLM
-- [ ] Material Perception
+- [ ] Physical imformation
 - [ ] Paper
 
 ## Developer tools
