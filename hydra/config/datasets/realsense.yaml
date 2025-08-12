@@ -1,7 +1,7 @@
 ---
 map_window:
   type: spatial
-  max_radius_m: 10.0  # 适合室内环境的范围
+  max_radius_m: 8.0  # fit indoor
 active_window:
   volumetric_map:
     voxels_per_side: 32
@@ -12,7 +12,7 @@ active_window:
       type: MLESemanticIntegrator
 frontend:
   pgmo:
-    time_horizon: 50.0  # 减小时间范围，适合更快的处理
+    time_horizon: 30.0  # 15
     d_graph_resolution: 2.5
     mesh_resolution: 0.005
   objects:
@@ -20,8 +20,11 @@ frontend:
     cluster_tolerance: 0.18
   freespace_places:
     type: gvd
+    filter_places: true
+    min_places_component_size: 3
+    filter_ground: false
     gvd:
-      max_distance_m: 5.0  # 适合室内环境的距离
+      max_distance_m: 5.0  # indoor
       min_distance_m: 0.2
       min_diff_m: 0.1
       voronoi_config:
@@ -31,15 +34,16 @@ frontend:
         parent_cos_angle_separation: 0.2
     graph:
       type: CompressionGraphExtractor
-      compression_distance_m: 1.0
+      compression_distance_m: 1.5
       min_node_distance_m: 0.4
       min_edge_distance_m: 0.3
       add_heuristic_edges: false
+      merge_policy: distance
   surface_places:
     prefix: P
-    place_memory_radius_m: 20  # 减小记忆半径
-    active_place_radius_m: 12.0  # 减小活动半径
-    mesh_active_window_m: 15.0  # 减小网格窗口
+    place_memory_radius_m: 20  # reduce
+    active_place_radius_m: 12.0  # reduce
+    mesh_active_window_m: 15.0  # reduce
     cluster_tolerance: 0.8
     min_cluster_size: 80
     max_cluster_size: 100000
