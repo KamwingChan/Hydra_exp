@@ -40,11 +40,12 @@ mkdir build && cd build
 cmake -DMMDEPLOY_TARGET_BACKENDS=trt ..
 make -j$(nproc)
 ```
-Then you will see _libmmdeploy_tensorrt_ops.so_ in _lib/_
+Then you will see _libmmdeploy_tensorrt_ops.so_ in _lib/_.
 ```bash
 sudo cp lib/libmmdeploy_tensorrt_ops.so /usr/lib/libmmdeploy_tensorrt_ops.so
 ```
-### Using mask2former provided by [MMsegment](https://github.com/open-mmlab/mmsegmentation/tree/main/configs/mask2former)
+### Using mask2former or other models provided by [MMsegment](https://github.com/open-mmlab/mmsegmentation/tree/main/configs/mask2former)
+We recommend deeplabv3plus/Oneformer for alternative model.
 ```bash
 cd ${YOUR_WS}/mmdeploy
 wget https://download.openmmlab.com/mmsegmentation/v0.5/mask2former/mask2former_r50_8xb2-90k_cityscapes-512x1024/mask2former_r50_8xb2-90k_cityscapes-512x1024_20221202_140802-ffd9d750.pth
