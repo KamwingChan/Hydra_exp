@@ -5,8 +5,8 @@ map_window:
 active_window:
   volumetric_map:
     voxels_per_side: 16
-    voxel_size: 0.1
-    truncation_distance: 0.3
+    voxel_size: 0.05
+    truncation_distance: 0.12
   tsdf:
     semantic_integrator:
       type: MLESemanticIntegrator
@@ -14,7 +14,7 @@ frontend:
   pgmo:
     time_horizon: 15.0
     d_graph_resolution: 2.5
-    mesh_resolution: 0.005
+    mesh_resolution: 0.015
   objects:
     min_cluster_size: 40
     cluster_tolerance: 0.25
@@ -35,7 +35,7 @@ frontend:
     filter_ground: false
     gvd:
       max_distance_m: 4.5
-      min_distance_m: 0.2
+      min_distance_m: 0.10
       min_diff_m: 0.1
       voronoi_config:
         mode: L1_THEN_ANGLE
@@ -102,8 +102,8 @@ backend:
     num_interp_pts: 3
     interp_horizon: 10.0
     enable_sparsify: false
-    trans_node_dist: 1.0
-    rot_node_dist: 1.2
+    trans_node_dist: 0.4
+    rot_node_dist: 0.4
     rpgo:
       odom_trans_threshold: 0.05
       odom_rot_threshold: 0.01

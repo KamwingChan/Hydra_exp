@@ -1,0 +1,8 @@
+# Request: Information sent from C++ to Python
+string label
+kimera_pgmo_msgs/KimeraPgmoMesh object_mesh
+---
+# Response: Information sent from Python back to C++
+string description
+int8 friction_level
+bool pushable

@@ -14,19 +14,23 @@ mv hydra_realsense.launch realsense-ros/realsense2_camera/launch
 ## Launch Method (In seperate terminal)
 Using semantic_inference as semantic input (Mask2former segmenter is under develop)
 ```bash
-roslaunch hydra_ros realsense.launch model_name:=ade20k-hrnetv2-c1
-roslaunch hydra_ros realsense.launch model_name:=ade20k-mask2former-r50
+roslaunch hydra_ros realsense.launch model_name:=ade20k-segformer-b5
 roslaunch realsense2_camera hydra_realsense.launch
 roslaunch kimera_vio_ros kimera_vio_d455.launch 
+
 ```
 ## Future Work
 - [ ] Room Classification
 - [ ] SpatialLM
-- [ ] Physical information (Coming soon)
+- [x] [Physical information](/physical_inference)
 - [ ] Paper
 
 ## Physical imformation
 ### Our Method
+
+- [ ] VLN
+- [ ] SpatialLM
+- [x] Material Perception
 
 ## Developer tools
 ### Using [mmlab](https://github.com/open-mmlab/mmdeploy/blob/main/docs/en/04-supported-codebases/mmdet.md#supported-models)
@@ -44,18 +48,18 @@ Then you will see _libmmdeploy_tensorrt_ops.so_ in _lib/_.
 ```bash
 sudo cp lib/libmmdeploy_tensorrt_ops.so /usr/lib/libmmdeploy_tensorrt_ops.so
 ```
-### Using mask2former or other models provided by [MMsegment](https://github.com/open-mmlab/mmsegmentation/tree/main/configs/mask2former)
-We recommend Deeplabv3plus / Oneformer for alternative model.
+
+### Using segformer provided by [MMsegment](https://github.com/open-mmlab/mmsegmentation/tree/main/configs/mask2former)
 ```bash
 cd ${YOUR_WS}/mmdeploy
-wget https://download.openmmlab.com/mmsegmentation/v0.5/mask2former/mask2former_r50_8xb2-90k_cityscapes-512x1024/mask2former_r50_8xb2-90k_cityscapes-512x1024_20221202_140802-ffd9d750.pth
+wget https://download.openmmlab.com/mmsegmentation/v0.5/segformer/segformer_mit-b5_640x640_160k_ade20k/segformer_mit-b5_640x640_160k_ade20k_20210801_121243-41d2845b.pth
 python ./tools/deploy.py \
-    configs/mmseg/segmentation_onnxruntime_dynamic.py \
-    ~/workspace/mmsegmentation/configs/mask2former/mask2former_r50_8xb2-160k_ade20k-512x512.py \
-    mask2former_r50_8xb2-160k_ade20k-512x512_20221204_000055-2d1f55f1.pth \
-    ~/Mask2Former/1_Color.png(Your image path) \
-    --work-dir mmdeploy_model/mask2former-ade20k-r50 \
-    --device cuda \
+    configs/mmseg/segmentation_onnxruntime_static-480x640.py \
+    ~/workspace/mmsegmentation/configs/segformer/segformer_mit-b5_8xb2-160k_ade20k-640x640.py \
+    segformer_mit-b5_640x640_160k_ade20k_20210801_121243-41d2845b.pth \
+    ~/Mask2Former/1_Color.png \
+    --work-dir mmdeploy_model/segformer \
+    --device cpu \
     --show \
     --dump-info
 ```

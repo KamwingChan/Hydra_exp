@@ -1,10 +1,7 @@
-# semantic_inference/config/models/ade20k-mask2former_r50_custom.yaml
----
 segmenter:
   model:
     # This model uses dynamic input dimensions, so input_size is not specified.
     # The onnx_file path is relative to the package share directory at runtime.
-    onnx_file: "models/ade20k-mask2former-r50-new.onnx"
     color:
       # Normalization values are calculated from the training config:
       # mean = pixel_mean / 255

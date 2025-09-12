@@ -1,31 +1,41 @@
 ---
 map_window:
   type: spatial
-  max_radius_m: 8.0  # fit indoor
+  max_radius_m: 8.0
 active_window:
   volumetric_map:
-    voxels_per_side: 32
+    voxels_per_side: 16
     voxel_size: 0.05
-    truncation_distance: 0.3
+    truncation_distance: 0.12
   tsdf:
     semantic_integrator:
       type: MLESemanticIntegrator
 frontend:
   pgmo:
-    time_horizon: 30.0  # 15
+    time_horizon: 15.0
     d_graph_resolution: 2.5
-    mesh_resolution: 0.005
+    mesh_resolution: 0.015
   objects:
-    min_cluster_size: 25
-    cluster_tolerance: 0.18
+    min_cluster_size: 15
+    cluster_tolerance: 0.15
+  surface_places:
+    type: place_2d
+    prefix: P
+    pure_final_place_size: 1
+    cluster_tolerance: .3
+    min_cluster_size: 50
+    max_cluster_size: 100000
+    min_final_place_points: 10
+    place_max_neighbor_z_diff: .5
+    place_overlap_threshold: 0.0
   freespace_places:
     type: gvd
     filter_places: true
     min_places_component_size: 3
     filter_ground: false
     gvd:
-      max_distance_m: 5.0  # indoor
-      min_distance_m: 0.2
+      max_distance_m: 4.5
+      min_distance_m: 0.10
       min_diff_m: 0.1
       voronoi_config:
         mode: L1_THEN_ANGLE
@@ -36,19 +46,25 @@ frontend:
       type: CompressionGraphExtractor
       compression_distance_m: 1.5
       min_node_distance_m: 0.4
-      min_edge_distance_m: 0.3
-      add_heuristic_edges: false
+      min_edge_distance_m: 0.25
+      node_merge_distance_m: 0.7
       merge_policy: distance
-  surface_places:
-    prefix: P
-    place_memory_radius_m: 20  # reduce
-    active_place_radius_m: 12.0  # reduce
-    mesh_active_window_m: 15.0  # reduce
-    cluster_tolerance: 0.8
-    min_cluster_size: 80
+    tsdf_interpolator:
+      type: downsample
+      ratio: 2
+  use_frontiers: false
+  frontier_places:
+    type: voxel_clustering
+    cluster_tolerance: 0.3
+    min_cluster_size: 10
     max_cluster_size: 100000
-    min_final_place_size: 7
-    min_final_place_points: 10
+    max_place_radius: 5
+    dense_frontiers: false
+    frontier_splitting_threshold: 0.2
+    point_threshold: 10
+    recent_block_distance: 25
+    minimum_relative_z: -1.
+    maximum_relative_z: 1
 backend:
   add_places_to_deformation_graph: true
   optimize_on_lc: true
@@ -62,8 +78,6 @@ backend:
       type: Update2dPlacesFunctor
     places:
       type: UpdatePlacesFunctor
-      pos_threshold_m: 0.35
-      distance_tolerance_m: 0.25
     frontiers:
       type: UpdateFrontiersFunctor
     rooms:
@@ -75,7 +89,7 @@ backend:
         min_room_size: 10
         dilation_threshold_mode: PLATEAU
         min_lifetime_length_m: 0.1
-        plateau_ratio: 0.25
+        plateau_ratio: 0.15
         clustering_mode: NEIGHBORS
         dilation_diff_threshold_m: -1.0
     buildings:
@@ -87,11 +101,11 @@ backend:
     embed_trajectory_delta_t: 5.0
     num_interp_pts: 3
     interp_horizon: 10.0
-    enable_sparsify: true
-    trans_node_dist: 1.0
-    rot_node_dist: 1.2
+    enable_sparsify: false
+    trans_node_dist: 0.4
+    rot_node_dist: 0.4
     rpgo:
-      odom_trans_threshold: 0.01
+      odom_trans_threshold: 0.05
       odom_rot_threshold: 0.01
       pcm_trans_threshold: -1
       pcm_rot_threshold: -1
@@ -110,9 +124,9 @@ backend:
       loop_close: 5.0e-02
       sg_loop_close: 1.0e-01
       prior: 1.0e-02
-      mesh_mesh: 1.0e-01
-      pose_mesh: 1.0e-01
-      place_mesh: 1.0e-01
+      mesh_mesh: 1.0e-02
+      pose_mesh: 1.0e-02
+      place_mesh: 1.0e-02
       place_edge: 10.0
       place_merge: 10.0
       object_merge: 10.0

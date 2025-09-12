@@ -14,8 +14,8 @@ input:
         type: ClosedSetImageReceiver
       sensor:
         type: camera_info
-        min_range: $(arg sensor_min_range)
-        max_range: $(arg sensor_max_range)
+        min_range: 0.2
+        max_range: 5.0
         extrinsics:
           type: ros
           sensor_frame: $(arg sensor_frame)

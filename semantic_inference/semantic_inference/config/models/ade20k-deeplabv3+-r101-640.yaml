@@ -1,0 +1,12 @@
+segmenter:
+  model:
+    # This model uses dynamic input dimensions, so input_size is not specified.
+    # The onnx_file path is relative to the package share directory at runtime.
+    color:
+      # Normalization values are calculated from the training config:
+      # mean = pixel_mean / 255
+      # stddev = pixel_std / 255
+      mean: [0.485, 0.456, 0.406]      # [123.675, 116.28, 103.53] / 255
+      stddev: [0.229, 0.224, 0.225]    # [58.395, 57.12, 57.375] / 255
+    # The number of classes for the ADE20k dataset
+    num_classes: 150
