@@ -3,6 +3,7 @@
 camera_id: right_cam
 
 # Sensor extrinsics wrt. the body-frame
+# Original calibration values - coordinate transformation handled at ROS tf level
 T_BS:
   cols: 4
   rows: 4

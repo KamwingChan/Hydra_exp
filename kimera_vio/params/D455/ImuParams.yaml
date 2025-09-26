@@ -4,8 +4,10 @@
 # 1: ImuFactor
 imu_preintegration_type: 1
 
-# These are Euroc Dataset parameters
+# RealSense D455 IMU parameters
 # Sensor extrinsics wrt. the body-frame.
+# Keep as identity matrix to avoid Kimera VIO validation errors
+# Coordinate system transformation will be handled at ROS tf level
 T_BS:
   cols: 4
   rows: 4

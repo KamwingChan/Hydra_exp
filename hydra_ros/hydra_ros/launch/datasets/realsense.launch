@@ -12,8 +12,16 @@
     
     <!-- RealSense tf setup - Complete TF tree -->
     <!-- odom -> base_link (odometry frame) -->
-    <node pkg="tf2_ros" type="static_transform_publisher" name="odom_to_base" 
-          args="0 0 0 0 0 0 $(arg odom_frame) $(arg robot_frame)" />
+    <!-- 注释掉静态tf发布器，因为Kimera-VIO会提供动态的odom->base_link变换 -->
+    <!-- <node pkg="tf2_ros" type="static_transform_publisher" name="odom_to_base" 
+          args="0 0 0 0 0 0 $(arg odom_frame) $(arg robot_frame)" /> -->
+    
+    <!-- 将Kimera-VIO的odometry转换为tf变换 -->
+    <node pkg="hydra_ros" type="odom_to_tf" name="odom_to_tf_publisher" output="screen">
+        <param name="odom_frame" value="$(arg odom_frame)" />
+        <param name="base_link_frame" value="$(arg robot_frame)" />
+        <param name="odom_topic" value="/kimera_vio_ros/odometry" />
+    </node>
     
     <!-- base_link -> camera_link (camera mounting position) -->
     <node pkg="tf2_ros" type="static_transform_publisher" name="base_to_camera_link" 
@@ -22,6 +30,10 @@
     <!-- camera_link -> camera_color_optical_frame (camera optical frame) -->
     <node pkg="tf2_ros" type="static_transform_publisher" name="camera_link_to_color_optical" 
           args="0 0 0 -1.5708 0 -1.5708 camera_link camera_color_optical_frame" />
+    
+    <node pkg="tf2_ros" type="static_transform_publisher" name="camera_link_to_depth_optical" 
+          args="0 0 0 -1.5708 0 -1.5708 camera_link camera_depth_optical_frame" />
+
     
     <!-- lcd config -->
     <arg name="use_gnn_descriptors" default="false"/>

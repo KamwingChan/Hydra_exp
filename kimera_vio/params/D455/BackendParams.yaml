@@ -6,12 +6,12 @@ backend_modality: 0
 #INITIALIZATION PARAMETERS
 autoInitialize: 1
 roundOnAutoInitialize: 0
-initialPositionSigma: 1e-05
-initialRollPitchSigma: 0.174533 # 10.0/180.0*M_PI
-initialYawSigma: 0.00174533 # 0.1/180.0*M_PI
-initialVelocitySigma: 0.001
-initialAccBiasSigma: 0.0001
-initialGyroBiasSigma: 0.001
+initialPositionSigma: 1e-04     # Slightly increased for more robust initialization
+initialRollPitchSigma: 0.087266 # 5.0/180.0*M_PI - reduced for better stability
+initialYawSigma: 0.017453       # 1.0/180.0*M_PI - increased for indoor environments
+initialVelocitySigma: 0.01      # Increased for more realistic initial velocity uncertainty
+initialAccBiasSigma: 0.001      # Increased for D455 IMU characteristics
+initialGyroBiasSigma: 0.01      # Increased for D455 IMU characteristics
 
 # VISION PARAMETERS ###########################################################
 ## Smart Factors ##
