@@ -1,0 +1,26 @@
+# 忽略第三方库
+catkin_simple/
+clio/
+config_utilities/
+dbow2_catkin/
+khronos/
+kimera_pgmo/
+kimera_rpgo/
+opengv_catkin/
+pose_graph_tools/
+realsense-ros/
+spark_dsg/
+spatial_hash/
+teaser_plusplus/
+
+# 忽略开发环境文件
+*.code-workspace
+*.swp
+*.log
+__pycache__/
+*.pyc
+
+# 忽略临时脚本
+hydra_ros/hydra_ros/scripts/odom_to_tf_publisher.py
+kimera_vio_ros/scripts/test_d455_improvements.bash
+
