@@ -1,0 +1,76 @@
+<launch>
+    <!--Basic settings-->
+    <arg name="sim_time_required" default="false"/>
+    <param name="use_sim_time" value="$(arg sim_time_required)"/>
+    <arg name="use_gt_frame" default="true" doc="use simulator-provided tf frame"/>
+    <arg name="use_gt_semantics" default="false" doc="use simulator-provider semantics"/>
+    <arg name="color_mesh_by_label" default="false" doc="display mesh colored by semantic label"/>
+    <arg name="use_single_channel_label_image" default="false"/>
+    
+    <arg name="robot_frame" default="camera_link" doc="robot body tf frame"/>
+    <arg name="odom_frame" default="world" doc="odometry (map) frame"/>
+    <arg name="sensor_frame" default="camera_link" doc="camera frame"/>
+    <arg name="hydra_config_path" default="$(find hydra)/config/datasets/isaacsim.yaml"/>
+    
+    <!-- base_link -> camera_link (camera mounting position) -->
+    <!--node pkg="tf2_ros" type="static_transform_publisher" name="base_to_camera_link" 
+          args="0 0 0 0 0 0 $(arg robot_frame) camera_link" /-->
+    
+    <!-- map to world-->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="fake_world_tf" args="0 0 0 0 0 0 1 map world" if="$(arg use_gt_frame)"/>
+          
+    <!-- camera_link -> camera_color_optical_frame (camera optical frame) -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="camera_link_to_color_optical" 
+          args="0 0 0 0 0 0 camera_link camera_color_optical_frame" />
+    
+    <!-- lcd config -->
+    <arg name="use_gnn_descriptors" default="false"/>
+    <arg name="lcd_config_name" default="$(eval 'uhumans2_gnn.yaml' if use_gnn_descriptors else 'uhumans2.yaml')"/>
+    <arg name="lcd_config_path" default="$(find hydra)/config/lcd/$(arg lcd_config_name)"/>
+    
+    <!-- semantics -->
+    <arg name="labelspace_name" default="ade20k_full" doc="semantic label space"/>
+    <!--TODO: Editing the prim -->
+    <arg name="semantic_map_path" default="$(find hydra_ros)/config/color/$(arg labelspace_name).csv" if="$(arg use_gt_semantics)"/>
+    <arg name="semantic_label_remap_filepath" default="$(find hydra)/config/label_remaps/uhumans2_office.yaml" if="$(arg use_single_channel_label_image)"/>
+    <arg name="use_prerecorded_semantics" default="false" doc="Use precorded labels as input"/>
+    <arg name="prerecorded_topic" default="/oneformer/labels/image_raw" doc="Topic containing prerecorded labels"/>
+    
+
+    
+    <!-- isaacsim camera topics -->
+    <arg name="rgb_topic" default="/camera/color/image_raw"/>
+    <arg name="rgb_info_topic" default="/camera/camera_info"/>
+    <arg name="depth_topic" default="/camera/depth/image_raw"/>
+    <arg name="label_topic" default="semantic_inference/semantic/image_raw" unless="$(arg use_gt_semantics)"/>
+    
+    
+   
+    <!--other settings-->
+    <arg name="use_openset_features" default="false" doc="assign clip features to places"/>
+    <group if="$(arg use_openset_features)">
+        <remap from="/clip_publisher_node/image" to="$(arg rgb_topic)"/>
+        <remap from="/clip_publisher_node/feature" to="/hydra_ros_node/input/left_cam/feature"/>
+        <include file="$(find semantic_inference_ros)/launch/clip_publisher.launch"/>
+    </group>
+
+    <group unless="$(arg use_gt_semantics)">
+        <remap from="semantic_inference/color/image_raw" to="$(arg rgb_topic)"/>
+        <remap from="semantic_inference/labels/image_raw" to="$(arg prerecorded_topic)" if="$(arg use_prerecorded_semantics)"/>
+        <include file="$(find semantic_inference_ros)/launch/semantic_inference.launch" pass_all_args="true"/>
+    </group>
+
+    <remap from="hydra_ros_node/input/left_cam/depth_registered/image_rect" to="$(arg depth_topic)"/>
+    <remap from="hydra_ros_node/input/left_cam/rgb/image_raw" to="$(arg rgb_topic)"/>
+    <remap from="hydra_ros_node/input/left_cam/rgb/camera_info" to="$(arg rgb_info_topic)"/>
+    <remap from="hydra_ros_node/input/left_cam/semantic/image_raw" to="$(arg label_topic)"/>
+    <remap from="hydra_ros_node/pose_graph" to="kimera_vio_ros/pose_graph_incremental"/>
+    
+    
+    
+    <!-- rviz configure -->
+    <include file="$(find hydra_ros)/launch/hydra.launch" pass_all_args="true">
+        <arg name="dataset_name" default="realsense"/>
+        <arg name="rviz_path" default="$(find hydra_ros)/rviz/realsense.rviz"/>
+    </include>
+</launch>
