@@ -1,7 +1,9 @@
 # Hydra_exp
 ## Introduction
 An experiment of deploying Hydra on __Realsense D455__, including semantic_inference and kimera_vio modules.
+
 __New__ (25.07)The hydra system is now running on isaacsim too.
+
 __New__ (25.09)The "Continue Mapping" feature is currently in early development. Use with caution.
 
 ## Follow [Hydra](/hydra/README.md) to finish quick start !!! Choose the ros1 branch
