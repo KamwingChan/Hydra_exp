@@ -1,0 +1,9 @@
+# Request: Information sent from C++ to Python
+string label
+sensor_msgs/Image image
+---
+# Response: Information sent from Python back to C++
+string description
+int8 friction_level
+bool pushable
+int8 weight_level

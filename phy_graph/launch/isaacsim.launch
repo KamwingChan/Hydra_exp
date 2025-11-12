@@ -1,0 +1,25 @@
+<launch>
+    <!-- Argument to select the label space -->
+    <arg name="label_space" default="ade20k" />
+
+    <!-- Start the Python service for physical property inference -->
+    <node name="phy_graph_server"
+          pkg="phy_graph"
+          type="module.py"
+          output="screen">
+    	<param name="use_legacy_rendering" value="false"/>
+    </node>
+
+    <!-- Start the C++ node for subscribing to Hydra's output -->
+    <node name="phy_graph_node"
+          pkg="phy_graph"
+          type="phy_graph_node"
+          output="screen">
+        <!-- Remap the generic 'input_mesh' topic to the actual mesh topic from hydra -->
+        <remap from="input_mesh" to="/hydra_dsg_visualizer/dsg_mesh" />
+
+        <!-- Load parameters into the node's private namespace -->
+        <rosparam command="load" file="$(find phy_graph)/config/ade20k.yaml" />
+        <param name="label_space" value="$(arg label_space)" />
+    </node>
+</launch>

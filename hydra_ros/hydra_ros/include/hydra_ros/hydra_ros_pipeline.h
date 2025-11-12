@@ -65,12 +65,16 @@ class HydraRosPipeline : public HydraPipeline {
 
   virtual ~HydraRosPipeline();
 
+  bool loadMap(const std::string& map_load_path);
+
   void init() override;
 
   void stop() override;
 
  protected:
   virtual void initLCD();
+  
+  void cleanupInvalidMeshIndices(DynamicSceneGraph& graph, size_t max_valid_index);
 
  protected:
   ros::NodeHandle nh_;

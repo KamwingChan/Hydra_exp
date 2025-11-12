@@ -56,6 +56,8 @@ struct RunSettings {
   bool verbose_plugins = false;
   bool trace_plugin_allocations = false;
   std::vector<std::string> paths;
+  bool continue_mapping = false;
+  std::string map_load_path = "";
 };
 
 void declare_config(RunSettings& config) {
@@ -70,6 +72,8 @@ void declare_config(RunSettings& config) {
   field(config.verbose_plugins, "verbose_plugins");
   field(config.trace_plugin_allocations, "trace_plugin_allocations");
   field(config.paths, "paths");
+  field(config.continue_mapping, "continue_mapping");
+  field(config.map_load_path, "map_load_path");
 }
 
 }  // namespace hydra
@@ -101,6 +105,20 @@ int main(int argc, char* argv[]) {
 
   {  // start hydra scope
     hydra::HydraRosPipeline hydra(nh, settings.robot_id);
+
+    if (settings.continue_mapping) {
+      if (settings.map_load_path.empty()) {
+        LOG(FATAL) << "Continue mapping is enabled, but 'map_load_path' is not set! "
+                      "Aborting.";
+        return 1;
+      }
+
+      if (!hydra.loadMap(settings.map_load_path)) {
+        LOG(FATAL) << "Failed to load map from path: " << settings.map_load_path;
+        return 1;
+      }
+    }
+
     hydra.init();
 
     hydra.start();

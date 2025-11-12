@@ -1,0 +1,32 @@
+<launch>
+    <!-- Argument to select the label space -->
+    <arg name="label_space" default="uhuman2" />
+
+    <!-- Topic arguments for flexible configuration -->
+    <arg name="rgb_topic" default="/tesse/left_cam/rgb/image_raw" />
+    <arg name="camera_info_topic" default="/tesse/left_cam/camera_info" />
+    <arg name="mesh_topic" default="/hydra_dsg_visualizer/dsg_mesh" />
+    <arg name="debug_save_images" default="false" />
+    <!-- Start the Python service for physical property inference -->
+    <node name="phy_graph_server"
+          pkg="phy_graph"
+          type="module.py"
+          output="screen">
+    </node>
+
+    <!-- Start the C++ node for subscribing to Hydra's output -->
+    <node name="phy_graph_node"
+          pkg="phy_graph"
+          type="phy_graph_node"
+          output="screen">
+        <!-- Remap topics to use arguments for flexibility -->
+        <remap from="input_mesh" to="$(arg mesh_topic)" />
+        <remap from="rgb_image" to="$(arg rgb_topic)" />
+        <remap from="camera_info" to="$(arg camera_info_topic)" />
+        <!-- Load parameters into the node's private namespace -->
+        <rosparam command="load" file="$(find phy_graph)/config/uhuman2.yaml" />
+        <param name="label_space" value="$(arg label_space)" />
+        <param name="/use_sim_time" value="true"/>
+        <param name="/debug_save_images" value="$(arg debug_save_images)"/>
+    </node>
+</launch>

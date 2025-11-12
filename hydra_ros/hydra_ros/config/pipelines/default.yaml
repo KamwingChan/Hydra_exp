@@ -8,6 +8,7 @@ disable_timer_output: $(arg disable_timer_output)
 timing_disabled: $(arg timing_disabled)
 enable_frontend_output: $(arg enable_frontend_output)
 enable_zmq_interface: $(arg enable_zmq_interface)
+continue_mapping: $(arg continue_mapping)
 frontend:
   type: GraphBuilder
   enable_places: $(arg enable_places)

@@ -9,6 +9,10 @@
     <arg name="labelspace_name"/>
     <arg name="hydra_ros_ns" default="hydra_ros_node" doc="Hydra ros node namespace"/>
     <arg name="hydra_config_path" doc="General configuration file for Hydra"/>
+    <!-- HYDRA CONTINUE MAPPING ARGS -->
+    <arg name="continue_mapping" default="false" doc="Set to true to load a pre-existing map and continue mapping."/>
+    <arg name="map_load_path" default="" doc="Path to the root of the saved hydra map folder (e.g., /path/to/output/your_dataset/timestamp)"/>
+
     <!-- sensor configuration -->
     <arg name="sensor_min_range" default="0.1" doc="minimum sensor range in meters"/>
     <arg name="sensor_max_range" default="5.0" doc="maximum sensor range in meters"/>
@@ -65,6 +69,9 @@
         <param name="odom_frame" value="$(arg odom_frame)"/>
         <param name="robot_frame" value="$(arg robot_frame)"/>
         <param name="map_frame" value="$(arg map_frame)"/>
+        <!-- map reloading -->
+        <param name="continue_mapping" value="$(arg continue_mapping)" />
+        <param name="map_load_path" value="$(arg map_load_path)" />
 
         <!-- visualization -->
         <rosparam file="$(arg mesh_segmenter_sinks)" ns="frontend/objects"/>
