@@ -1,5 +1,6 @@
 #include "hydra/frontend/place_2d_split_logic.h"
 
+#include <glog/logging.h>
 #include <spark_dsg/dynamic_scene_graph.h>
 #include <spark_dsg/node_attributes.h>
 
@@ -17,6 +18,12 @@ void addRectInfo(const Place2d::CloudT& points,
                  Eigen::Vector2d& cut_plane) {
   std::vector<cv::Point2f> region;
   for (auto midx : mindices) {
+    // Boundary check to prevent out-of-range access
+    if (midx >= points.size()) {
+      LOG(WARNING) << "[addRectInfo] Skipping out-of-bounds mesh index " << midx 
+                   << " (mesh size: " << points.size() << ")";
+      continue;
+    }
     region.push_back(cv::Point2f(points[midx].x(), points[midx].y()));
   }
   cv::RotatedRect box = cv::minAreaRect(region);
@@ -83,6 +90,12 @@ void addBoundaryInfo(const Place2d::CloudT& points,
   std::vector<Place2d::Index> region_to_cloud_index;
   centroid = Place2d::CentroidT();
   for (auto midx : mindices) {
+    // Boundary check to prevent out-of-range access
+    if (midx >= points.size()) {
+      LOG(WARNING) << "[addBoundaryInfo] Skipping out-of-bounds mesh index " << midx 
+                   << " (mesh size: " << points.size() << ")";
+      continue;
+    }
     region_to_cloud_index.push_back(midx);
     region_pts.push_back(cv::Point2f(points[midx].x(), points[midx].y()));
     centroid.add(pcl::PointXYZ(points[midx].x(), points[midx].y(), points[midx].z()));
@@ -95,6 +108,12 @@ void addBoundaryInfo(const Place2d::CloudT& points,
   boundary_mindices.clear();
   for (int pix : ch) {
     auto cloud_ix = region_to_cloud_index.at(pix);
+    // Additional boundary check for cloud_ix (should be safe, but defensive)
+    if (cloud_ix >= points.size()) {
+      LOG(WARNING) << "[addBoundaryInfo] Skipping out-of-bounds convex hull index " 
+                   << cloud_ix << " (mesh size: " << points.size() << ")";
+      continue;
+    }
     Place2d::PointT p = points[cloud_ix];
     Eigen::Vector3d v = {p.x(), p.y(), p.z()};
     boundary.push_back(v);
@@ -132,6 +151,12 @@ std::pair<Place2d, Place2d> splitPlace(const Place2d::CloudT& points,
   size_t max_ix_2 = 0;
 
   for (auto midx : place.indices) {
+    // Boundary check to prevent out-of-range access
+    if (midx >= points.size()) {
+      LOG(WARNING) << "[splitPlace] Skipping out-of-bounds mesh index " << midx 
+                   << " (mesh size: " << points.size() << ")";
+      continue;
+    }
     Eigen::Vector2d pt(points[midx].x(), points[midx].y());
     double side = (pt - place.ellipse_centroid).dot(place.cut_plane);
     if (side >= 0) {

@@ -61,7 +61,8 @@ void updatePlace2dBoundary(Place2dNodeAttributes& attrs,
 
 void updatePlaces2d(SharedDsgInfo::Ptr dsg,
                     kimera_pgmo::MeshDelta& mesh_update,
-                    size_t num_archived_vertices);
+                    size_t num_archived_vertices,
+                    bool update_all_nodes = false);
 
 template <typename T>
 void mergeIndices(const T& from, T& to) {

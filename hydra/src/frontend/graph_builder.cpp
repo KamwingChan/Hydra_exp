@@ -136,12 +136,75 @@ GraphBuilder::GraphBuilder(const Config& config,
 
   CHECK(dsg_ != nullptr);
   CHECK(dsg_->graph != nullptr);
-  dsg_->graph->setMesh(std::make_shared<spark_dsg::Mesh>());
+  
+  // Get continue_mapping status from GlobalInfo
+  const bool is_continue_mapping = 
+      GlobalInfo::instance().getConfig().continue_mapping;
+  
+  if (is_continue_mapping) {
+    // Continue mapping mode: expect graph to already have mesh
+    if (!dsg_->graph->hasMesh() || dsg_->graph->mesh()->empty()) {
+      LOG(WARNING) << "[Hydra Frontend] Continue mapping enabled but no mesh found. "
+                   << "This may indicate loadMap() failed or was not called. "
+                   << "Falling back to empty mesh mode.";
+      dsg_->graph->setMesh(std::make_shared<spark_dsg::Mesh>());
+      mesh_compression_.reset(
+          new kimera_pgmo::DeltaCompression(config.pgmo.mesh_resolution));
+    } else {
+      LOG(INFO) << "[Hydra Frontend] Continue mapping: loaded mesh with " 
+                << dsg_->graph->mesh()->numVertices() << " vertices and "
+                << dsg_->graph->mesh()->numFaces() << " faces";
+      
+      // Initialize DeltaCompression from loaded mesh
+      mesh_compression_.reset(
+          new kimera_pgmo::DeltaCompression(config.pgmo.mesh_resolution));
+      
+      try {
+        mesh_compression_->initializeFromLoadedMesh(*dsg_->graph->mesh(), 0);
+        LOG(INFO) << "[Hydra Frontend] DeltaCompression initialized successfully for continue mapping";
+        
+        // Initialize segmenters from loaded graph
+        if (segmenter_) {
+          if (auto* mesh_segmenter = dynamic_cast<MeshSegmenter*>(segmenter_.get())) {
+            mesh_segmenter->initializeFromGraph(*dsg_->graph);
+          }
+        }
+        if (surface_places_) {
+          if (auto* place2d = dynamic_cast<Place2dSegmenter*>(surface_places_.get())) {
+            place2d->initializeFromGraph(*dsg_->graph);
+          }
+        }
+        if (frontier_places_) {
+          if (auto* frontier = dynamic_cast<FrontierExtractor*>(frontier_places_.get())) {
+            frontier->initializeFromGraph(*dsg_->graph);
+          }
+        }
+      } catch (const std::exception& e) {
+        LOG(ERROR) << "[Hydra Frontend] Failed to initialize DeltaCompression: " << e.what();
+        LOG(WARNING) << "[Hydra Frontend] Falling back to empty mesh mode";
+        // Fallback: create empty mesh
+        dsg_->graph->setMesh(std::make_shared<spark_dsg::Mesh>());
+      }
+    }
+  } else {
+    // Normal mapping mode: create new empty mesh
+    if (dsg_->graph->hasMesh() && !dsg_->graph->mesh()->empty()) {
+      LOG(WARNING) << "[Hydra Frontend] Normal mapping mode but graph already has mesh. "
+                   << "This may indicate unexpected state. Clearing mesh.";
+      dsg_->graph->setMesh(std::make_shared<spark_dsg::Mesh>());
+    }
+    
+    dsg_->graph->setMesh(std::make_shared<spark_dsg::Mesh>());
+    LOG(INFO) << "[Hydra Frontend] Created new empty mesh";
+    
+    // Normal initialization
+    mesh_compression_.reset(
+        new kimera_pgmo::DeltaCompression(config.pgmo.mesh_resolution));
+  }
+  
   const auto& prefix = GlobalInfo::instance().getRobotPrefix();
   dsg_->graph->createDynamicLayer(DsgLayers::AGENTS, prefix.key);
 
-  mesh_compression_.reset(
-      new kimera_pgmo::DeltaCompression(config.pgmo.mesh_resolution));
   deformation_compression_.reset(
       new kimera_pgmo::BlockCompression(config.pgmo.d_graph_resolution));
 
@@ -203,17 +266,29 @@ void GraphBuilder::stopImpl() {
 void GraphBuilder::save(const LogSetup& log_setup) {
   std::lock_guard<std::mutex> lock(mutex_);
   const auto output_path = log_setup.getLogDir("frontend");
+  
+  LOG(INFO) << "[Frontend Save] Saving DSG...";
   dsg_->graph->save(output_path + "/dsg.json", false);
-  dsg_->graph->save(output_path + "/dsg_with_mesh.json");
+  //dsg_->graph->save(output_path + "/dsg_with_mesh.json");
 
+  // const auto mesh = dsg_->graph->mesh();
+  // if (mesh && !mesh->empty()) {
+  //   kimera_pgmo::WriteMesh(output_path + "/mesh.ply", *mesh);
+  // }
+
+  // Release mesh to speed up destruction
   const auto mesh = dsg_->graph->mesh();
-  if (mesh && !mesh->empty()) {
-    kimera_pgmo::WriteMesh(output_path + "/mesh.ply", *mesh);
+  if (mesh) {
+    LOG(INFO) << "[Frontend Save] Releasing mesh (" 
+              << mesh->numVertices() << " vertices) to speed up destruction...";
+    dsg_->graph->setMesh(nullptr);
   }
 
   if (freespace_places_) {
     freespace_places_->save(log_setup);
   }
+  
+  LOG(INFO) << "[Frontend Save] Completed";
 }
 
 std::string GraphBuilder::printInfo() const {
@@ -429,7 +504,47 @@ void GraphBuilder::updateMesh(const ActiveWindowOutput& input) {
     // TODO(nathan) we should probably have a mutex before modifying the mesh, but
     // nothing else uses it at the moment
     ScopedTimer timer("frontend/mesh_update", input.timestamp_ns, true, 1, false);
+    
+    // CRITICAL: Preserve loaded mesh semantics for continue mapping
+    std::vector<uint32_t> preserved_labels;
+    const size_t vertex_start = last_mesh_update_->vertex_start;
+    
+    if (vertex_start > 0 && dsg_->graph->mesh()->has_labels) {
+      // Save semantic labels from loaded mesh
+      const auto& current_labels = dsg_->graph->mesh()->labels;
+      if (current_labels.size() >= vertex_start) {
+        preserved_labels.assign(current_labels.begin(), 
+                               current_labels.begin() + vertex_start);
+        VLOG(5) << "[Hydra Frontend] Preserved " << preserved_labels.size() 
+                << " semantic labels from loaded mesh";
+      }
+    }
+    
+    // Apply mesh delta update
     last_mesh_update_->updateMesh(*dsg_->graph->mesh());
+    // Mesh consistency check
+    const auto& mesh_ref = *dsg_->graph->mesh();
+    if (mesh_ref.has_labels && mesh_ref.labels.size() != mesh_ref.points.size()) {
+      LOG(WARNING) << "[MeshCheck] labels != points: "
+                   << mesh_ref.labels.size() << " vs " << mesh_ref.points.size();
+    } else {
+      VLOG(1) << "[MeshCheck] labels==points: " << mesh_ref.points.size();
+    }
+    
+    // DEBUG: Check MeshDelta status
+    VLOG(1) << "[DEBUG] MeshDelta: vertex_updates=" << last_mesh_update_->vertex_updates->size()
+              << ", semantic_updates=" << last_mesh_update_->semantic_updates.size()
+              << ", hasSemantics=" << last_mesh_update_->hasSemantics();
+    
+    // Restore preserved semantics
+    if (!preserved_labels.empty()) {
+      auto& labels = dsg_->graph->mesh()->labels;
+      if (labels.size() >= vertex_start) {
+        std::copy(preserved_labels.begin(), preserved_labels.end(), labels.begin());
+        VLOG(5) << "[Hydra Frontend] Restored " << preserved_labels.size() 
+                << " semantic labels for continue mapping";
+      }
+    }
   }  // end timing scope
 
   ScopedTimer timer("frontend/postmesh_callbacks", input.timestamp_ns, true, 1, false);

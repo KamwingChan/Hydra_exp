@@ -80,7 +80,15 @@ bool PgmoMeshLayerInterface::hasSemantics() const {
   if (mesh_.numBlocks() == 0) {
     return false;
   }
-  return mesh_.begin()->has_labels;
+  
+  // DEBUG: Check first block status
+  const auto& first_block = *mesh_.begin();
+  VLOG(2) << "[DEBUG] PgmoMeshLayerInterface::hasSemantics() - "
+            << "first block has_labels=" << first_block.has_labels
+            << ", labels.size=" << first_block.labels.size()
+            << ", total blocks=" << mesh_.numBlocks();
+  
+  return first_block.has_labels;
 }
 
 kimera_pgmo::MeshInterface::Ptr PgmoMeshLayerInterface::clone() const {

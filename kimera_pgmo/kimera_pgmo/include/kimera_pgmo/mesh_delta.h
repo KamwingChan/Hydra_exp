@@ -156,7 +156,7 @@ void MeshDelta::updateVertices(Vertices& vertices,
     traits::VertexTraits traits;
     traits.color = {p.r, p.g, p.b, p.a};
     traits.stamp = stamp_updates.at(i);
-    if (use_semantics) {
+    if (use_semantics && i < semantic_updates.size()) {
       traits.label = semantic_updates.at(i);
     }
     traits::set_vertex(vertices, idx, pos, traits);

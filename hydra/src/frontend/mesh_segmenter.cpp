@@ -120,14 +120,17 @@ inline bool nodesMatch(const Cluster& cluster, const SceneGraphNode& node) {
 LabelIndices getLabelIndices(const std::set<uint32_t>& desired_labels,
                              const kimera_pgmo::MeshDelta& delta,
                              const std::vector<size_t>& indices) {
-  CHECK(delta.hasSemantics());
+  if (!delta.hasSemantics()) {
+    VLOG(2) << "[Mesh Segmenter] MeshDelta has no semantics, returning empty label indices";
+    return LabelIndices();  // Return empty map
+  }
   const auto& labels = delta.semantic_updates;
 
   LabelIndices label_indices;
   std::set<uint32_t> seen_labels;
   for (const auto idx : indices) {
     if (static_cast<size_t>(idx) >= labels.size()) {
-      LOG(ERROR) << "bad index " << idx << " (of " << labels.size() << ")";
+      VLOG(3) << "Skipping index " << idx << " (of " << labels.size() << ") as it is out of range";
       continue;
     }
 
@@ -198,6 +201,7 @@ MeshSegmenter::MeshSegmenter(const Config& config, const std::set<uint32_t>& lab
   for (const auto& label : labels_) {
     active_nodes_[label] = std::set<NodeId>();
   }
+  VLOG(1) << "[MeshSeg] ctor next=" << NodeSymbol(next_node_id_).getLabel();
 }
 
 std::vector<size_t> getActiveIndices(const kimera_pgmo::MeshDelta& delta) {
@@ -443,6 +447,21 @@ void MeshSegmenter::addNodeToGraph(DynamicSceneGraph& graph,
   graph.emplaceNode(config.layer_id, next_node_id_, std::move(attrs));
   active_nodes_.at(label).insert(next_node_id_);
   ++next_node_id_;
+}
+
+void MeshSegmenter::initializeFromGraph(const DynamicSceneGraph& graph) {
+  if (!graph.hasLayer(DsgLayers::OBJECTS)) {
+    return;
+  }
+  NodeId max_id = 0;
+  const auto& layer = graph.getLayer(DsgLayers::OBJECTS);
+  for (const auto& [id, _] : layer.nodes()) max_id = std::max(max_id, id);
+  if (max_id > 0) {
+    const auto next_index = NodeSymbol(max_id).categoryId() + 1;
+    next_node_id_ = NodeSymbol(next_node_id_.category(), next_index);
+    VLOG(1) << "[MeshSeg] Initialized next_node_id to " << NodeSymbol(next_node_id_).getLabel()
+            << " based on existing graph";
+  }
 }
 
 }  // namespace hydra

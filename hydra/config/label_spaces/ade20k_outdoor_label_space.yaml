@@ -5,6 +5,7 @@ invalid_labels: [0]
 object_labels:
   - 2
   - 7
+  - 8
   - 9
   - 10
   - 11

@@ -42,6 +42,7 @@
 
 #include "hydra/backend/backend_utilities.h"
 #include "hydra/backend/surface_place_utilities.h"
+#include "hydra/common/global_info.h"
 #include "hydra/frontend/place_2d_split_logic.h"
 #include "hydra/utils/place_2d_ellipsoid_math.h"
 #include "hydra/utils/timing_utilities.h"
@@ -121,12 +122,75 @@ void Update2dPlacesFunctor::call(const DynamicSceneGraph& unmerged,
 
   const auto& layer = unmerged.getLayer(layer_id_);
   const auto new_loopclosure = info->loop_closure_detected;
+  const auto mesh = unmerged.mesh();
+  
+  // ========== Defensive index cleanup for continue_mapping mode ==========
+  // Problem: mergeGraph() may overwrite indices updated in copyMeshDelta()
+  // Solution: Clean all invalid indices before use to prevent out-of-bounds access
+  const bool is_continue_mapping = 
+      GlobalInfo::instance().getConfig().continue_mapping;
+  
+  if (is_continue_mapping && mesh && !mesh->empty()) {
+    const size_t mesh_size = mesh->numVertices();
+    size_t cleaned_connections = 0;
+    size_t cleaned_boundaries = 0;
+    
+    for (const auto& [id, node_ptr] : layer.nodes()) {
+      auto& attrs = node_ptr->attributes<Place2dNodeAttributes>();
+      
+      // Clean pcl_mesh_connections
+      if (!attrs.pcl_mesh_connections.empty()) {
+        const size_t before = attrs.pcl_mesh_connections.size();
+        attrs.pcl_mesh_connections.erase(
+          std::remove_if(attrs.pcl_mesh_connections.begin(), 
+                        attrs.pcl_mesh_connections.end(),
+            [mesh_size](size_t idx) { return idx >= mesh_size; }),
+          attrs.pcl_mesh_connections.end()
+        );
+        cleaned_connections += (before - attrs.pcl_mesh_connections.size());
+        
+        // Update min/max indices
+        if (!attrs.pcl_mesh_connections.empty()) {
+          attrs.pcl_min_index = *std::min_element(attrs.pcl_mesh_connections.begin(),
+                                                  attrs.pcl_mesh_connections.end());
+          attrs.pcl_max_index = *std::max_element(attrs.pcl_mesh_connections.begin(),
+                                                  attrs.pcl_mesh_connections.end());
+        }
+      }
+      
+      // Clean pcl_boundary_connections (must sync with boundary vector)
+      if (!attrs.pcl_boundary_connections.empty()) {
+        std::vector<Eigen::Vector3d> cleaned_boundary;
+        std::vector<size_t> cleaned_boundary_indices;
+        cleaned_boundary.reserve(attrs.boundary.size());
+        cleaned_boundary_indices.reserve(attrs.pcl_boundary_connections.size());
+        
+        for (size_t i = 0; i < attrs.pcl_boundary_connections.size() && 
+                          i < attrs.boundary.size(); ++i) {
+          if (attrs.pcl_boundary_connections[i] < mesh_size) {
+            cleaned_boundary.push_back(attrs.boundary[i]);
+            cleaned_boundary_indices.push_back(attrs.pcl_boundary_connections[i]);
+          } else {
+            cleaned_boundaries++;
+          }
+        }
+        
+        attrs.boundary = std::move(cleaned_boundary);
+        attrs.pcl_boundary_connections = std::move(cleaned_boundary_indices);
+      }
+    }
+    
+    if (cleaned_connections > 0 || cleaned_boundaries > 0) {
+      VLOG(2) << "[Update2dPlacesFunctor] Cleaned " << cleaned_connections 
+              << " mesh connections and " << cleaned_boundaries 
+              << " boundary connections (mesh size: " << mesh_size << ")";
+    }
+  }
 
   active_tracker.clear();  // reset from previous pass
   const auto view = new_loopclosure ? LayerView(layer) : active_tracker.view(layer);
 
   size_t num_changed = 0;
-  const auto mesh = unmerged.mesh();
   for (const auto& node : view) {
     ++num_changed;
     auto& attrs = node.attributes<Place2dNodeAttributes>();
@@ -167,6 +231,14 @@ void Update2dPlacesFunctor::updateNode(const spark_dsg::Mesh::Ptr& mesh,
 
   pcl::CentroidPoint<pcl::PointXYZ> centroid;
   for (const auto& midx : connections) {
+    // Add boundary check to prevent out-of-range access
+    if (midx >= mesh->numVertices()) {
+      LOG(WARNING) << "[Update2dPlacesFunctor] Skipping out-of-bounds mesh index " << midx 
+                   << " for node " << NodeSymbol(node).getLabel()
+                   << " (mesh size: " << mesh->numVertices() << ")";
+      continue;
+    }
+    
     const auto& point = mesh->pos(midx);
     if (std::isnan(point.x()) || std::isnan(point.y()) || std::isnan(point.z())) {
       VLOG(4) << "found nan at index: " << midx << " with point: [" << point.x() << ", "
@@ -187,7 +259,16 @@ void Update2dPlacesFunctor::updateNode(const spark_dsg::Mesh::Ptr& mesh,
   attrs.position << pcl_pos.x, pcl_pos.y, pcl_pos.z;
 
   for (size_t i = 0; i < attrs.boundary.size(); ++i) {
-    const auto& point = mesh->pos(attrs.pcl_boundary_connections.at(i));
+    const auto& boundary_idx = attrs.pcl_boundary_connections.at(i);
+    // Add boundary check to prevent out-of-range access
+    if (boundary_idx >= mesh->numVertices()) {
+      LOG(WARNING) << "[Update2dPlacesFunctor] Skipping out-of-bounds boundary index " 
+                   << boundary_idx << " for node " << NodeSymbol(node).getLabel()
+                   << " (mesh size: " << mesh->numVertices() << ")";
+      continue;
+    }
+    
+    const auto& point = mesh->pos(boundary_idx);
     attrs.boundary[i] << point.x(), point.y(), point.z();
   }
 }

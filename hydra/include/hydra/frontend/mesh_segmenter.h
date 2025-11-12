@@ -73,6 +73,11 @@ class MeshSegmenter {
 
   explicit MeshSegmenter(const Config& config, const std::set<uint32_t>& labels);
 
+  // Initialize next_node_id_ from an existing graph (continue mapping). No-op if
+  // the target layer is missing. This avoids id collisions without affecting
+  // fresh mapping.
+  void initializeFromGraph(const DynamicSceneGraph& graph);
+
   LabelClusters detect(uint64_t timestamp_ns,
                        const kimera_pgmo::MeshDelta& active);
 

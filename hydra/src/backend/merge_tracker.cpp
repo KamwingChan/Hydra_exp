@@ -57,6 +57,13 @@ size_t MergeTracker::applyMerges(const DynamicSceneGraph& unmerged,
     }
 
     if (!graph.mergeNodes(merge.from, merge.to)) {
+      const bool from_exists = graph.hasNode(merge.from);
+      const bool to_exists = graph.hasNode(merge.to);
+      const bool orig_to_exists = graph.hasNode(orig_merge.to);
+      LOG(WARNING) << "[MergeDebug] fail: " << merge
+                   << " | from:" << from_exists
+                   << " | to:" << to_exists
+                   << " | orig_to:" << orig_to_exists;
       LOG(WARNING) << "Failed to apply merge: " << merge << " (original: " << orig_merge
                    << ", from: " << std::boolalpha << graph.hasNode(merge.from)
                    << ", to: " << graph.hasNode(merge.to) << ")";

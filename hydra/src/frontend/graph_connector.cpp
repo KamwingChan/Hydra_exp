@@ -150,13 +150,18 @@ void LayerConnector::connectChildren(DynamicSceneGraph& graph,
 
     auto prev_parent = node->getParent();
     if (prev_parent) {
-      active_parents.at(*prev_parent).erase(node->id);
+      // Use find() to safely check if parent exists in active_parents
+      auto parent_iter = active_parents.find(*prev_parent);
+      if (parent_iter != active_parents.end()) {
+        parent_iter->second.erase(node->id);
+      }
     }
 
     nn_finder.find(
         node->attributes().position, 1, false, [&](NodeId parent_id, size_t, double) {
           graph.insertParentEdge(parent_id, node->id);
-          active_parents.at(parent_id).insert(node->id);
+          // Use [] operator to create entry if it doesn't exist
+          active_parents[parent_id].insert(node->id);
         });
   }
 }

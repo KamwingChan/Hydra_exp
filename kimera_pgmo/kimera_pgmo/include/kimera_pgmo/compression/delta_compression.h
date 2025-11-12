@@ -158,17 +158,17 @@ class DeltaCompression {
   size_t num_archived_faces_;
 };
 
-// This Function is used to initialize the compression state from a loaded mesh. Added by Kamwing
 // Template implementation
 template<typename Mesh>
 void DeltaCompression::initializeFromLoadedMesh(const Mesh& mesh, uint64_t timestamp_ns) {
-  // 1. Set archived counts from loaded mesh
+  // Set archived vertex and face counts from loaded mesh
+  // These act as baseline offsets for all future mesh deltas
   num_archived_vertices_ = traits::num_vertices(mesh);
   num_archived_faces_ = traits::num_faces(mesh);
   
-  std::cout << "[DeltaCompression] Initializing from loaded mesh with "
-            << num_archived_vertices_ << " vertices and "
-            << num_archived_faces_ << " faces" << std::endl;
+  std::cout << "[DeltaCompression] Initialized with " 
+            << num_archived_vertices_ << " archived vertices and "
+            << num_archived_faces_ << " archived faces" << std::endl;
   
   // 2. Rebuild voxel mapping for all vertices
   // Use direct access to avoid optional member (timestamps/labels) issues

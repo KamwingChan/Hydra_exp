@@ -69,7 +69,7 @@ struct PipelineConfig {
   bool timing_disabled = false;
   bool disable_timer_output = true;
   bool enable_pgmo_logging = true;
-
+  bool continue_mapping = false;
   // Default settings for other modules. Can be overwritten by other module configs.
   int default_verbosity = 1;
   int default_num_threads = -1;  // -1 means use all available threads.

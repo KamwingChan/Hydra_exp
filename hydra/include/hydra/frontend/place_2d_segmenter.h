@@ -68,6 +68,11 @@ class Place2dSegmenter : public SurfacePlacesInterface {
 
   explicit Place2dSegmenter(const Config& config);
 
+  // Initialize next_node_id_ from an existing graph (continue mapping). No-op if
+  // the target layer is missing. This avoids id collisions without affecting
+  // fresh mapping.
+  void initializeFromGraph(const DynamicSceneGraph& graph);
+
   void detect(const ActiveWindowOutput& msg,
               const kimera_pgmo::MeshDelta& mesh_delta,
               const DynamicSceneGraph& graph) override;

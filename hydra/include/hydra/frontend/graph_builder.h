@@ -206,6 +206,7 @@ class GraphBuilder : public Module {
 
   std::vector<std::function<void(ActiveWindowOutput::Ptr)>> input_callbacks_;
   std::vector<std::function<void(const ActiveWindowOutput&)>> post_mesh_callbacks_;
+
 };
 
 void declare_config(GraphBuilder::Config& config);

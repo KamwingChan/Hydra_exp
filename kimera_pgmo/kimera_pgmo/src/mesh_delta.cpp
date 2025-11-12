@@ -110,7 +110,9 @@ MeshDelta::MeshDelta(const pcl::PointCloud<pcl::PointXYZRGBA>& vertices,
 }
 
 bool MeshDelta::hasSemantics() const {
+  // For contunue_mapping, we only need to check if the semantic updates are not empty
   return semantic_updates.size() == vertex_updates->size();
+  // return !semantic_updates.empty();
 }
 
 void MeshDelta::updateVertices(pcl::PointCloud<pcl::PointXYZRGBA>& vertices,

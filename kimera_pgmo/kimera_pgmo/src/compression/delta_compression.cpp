@@ -243,6 +243,29 @@ MeshDelta::Ptr DeltaCompression::update(MeshInterface& mesh,
 
   // 5) Increment the pass number, finalize mesh delta book-keeping, and return the new
   // mesh update.
+  
+  // CRITICAL: For continue mapping, ensure identity mapping for archived vertices
+  // This must be done on EVERY update, not just the first one, because:
+  // 1. Backend updatePlace2dMesh() relies on prev_to_curr to update place node indices
+  // 2. If prev_to_curr doesn't contain archived vertices, old place indices become stale
+  // 3. Stale indices cause crashes when accessing mesh data (colors, positions, etc.)
+  // 4. Only add mappings that don't already exist to avoid overwriting correct remaps
+  if (delta_->vertex_start > 0) {
+    size_t num_added = 0;
+    size_t covered = 0;
+    for (size_t i = 0; i < delta_->vertex_start; ++i) {
+      if (delta_->prev_to_curr.find(i) == delta_->prev_to_curr.end()) {
+        delta_->prev_to_curr[i] = i;
+        ++num_added;
+      } else {
+        ++covered;
+      }
+    }
+    // std::cout << "[Prev2Curr] vertex_start=" << delta_->vertex_start
+    //           << " covered=" << covered
+    //           << " added_identity=" << num_added << std::endl;
+  }
+  
   num_archived_vertices_ = delta_->getTotalArchivedVertices();
   num_archived_faces_ = delta_->getTotalArchivedFaces();
   ++sequence_number_;

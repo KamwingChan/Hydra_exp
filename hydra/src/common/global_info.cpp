@@ -106,6 +106,7 @@ void declare_config(PipelineConfig& config) {
   field(config.timing_disabled, "timing_disabled");
   field(config.disable_timer_output, "disable_timer_output");
   field(config.enable_pgmo_logging, "enable_pgmo_logging");
+  field(config.continue_mapping, "continue_mapping");
   field(config.default_verbosity, "default_verbosity");
   field(config.default_num_threads, "default_num_threads");
   field(config.store_visualization_details, "store_visualization_details");

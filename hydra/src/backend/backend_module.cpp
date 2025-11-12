@@ -124,9 +124,57 @@ BackendModule::BackendModule(const Config& config,
   // set up frontend graph copy
   unmerged_graph_ = private_dsg_->graph->clone();
   // set up mesh infrastructure
-  private_dsg_->graph->setMesh(std::make_shared<spark_dsg::Mesh>());
+  // Get continue_mapping status from GlobalInfo
+  const bool is_continue_mapping = 
+      GlobalInfo::instance().getConfig().continue_mapping;
+  
+  if (is_continue_mapping) {
+    // Continue mapping mode: expect graph to already have mesh
+    if (!private_dsg_->graph->hasMesh() || private_dsg_->graph->mesh()->empty()) {
+      LOG(WARNING) << "[Hydra Backend] Continue mapping enabled but no mesh found. "
+                   << "This may indicate loadMap() failed or was not called. "
+                   << "Falling back to empty mesh mode.";
+      private_dsg_->graph->setMesh(std::make_shared<spark_dsg::Mesh>());
+      // Normal initialization
+      original_vertices_.reset(new pcl::PointCloud<pcl::PointXYZ>());
+    } else {
+      LOG(INFO) << "[Hydra Backend] Continue mapping: preserving existing mesh with " 
+                << private_dsg_->graph->mesh()->numVertices() << " vertices and "
+                << private_dsg_->graph->mesh()->numFaces() << " faces";
+      
+      // Initialize original_vertices_ from loaded mesh for deformation tracking
+      auto loaded_mesh = private_dsg_->graph->mesh();
+      original_vertices_.reset(new pcl::PointCloud<pcl::PointXYZ>());
+      original_vertices_->resize(loaded_mesh->numVertices());
+      
+      for (size_t i = 0; i < loaded_mesh->numVertices(); ++i) {
+        const auto& p = loaded_mesh->points[i];
+        (*original_vertices_)[i].x = p.x();
+        (*original_vertices_)[i].y = p.y();
+        (*original_vertices_)[i].z = p.z();
+      }
+      
+      // Set timestamps for loaded vertices
+      vertex_stamps_.resize(loaded_mesh->numVertices(), 0);
+      num_archived_vertices_ = loaded_mesh->numVertices();
+      
+      LOG(INFO) << "[Hydra Backend] Initialized deformation tracking for "
+                << num_archived_vertices_ << " loaded vertices";
+    }
+  } else {
+    // Normal mapping mode: create new empty mesh
+    if (private_dsg_->graph->hasMesh() && !private_dsg_->graph->mesh()->empty()) {
+      LOG(WARNING) << "[Hydra Backend] Normal mapping mode but graph already has mesh. "
+                   << "This may indicate unexpected state. Clearing mesh.";
+      private_dsg_->graph->setMesh(std::make_shared<spark_dsg::Mesh>());
+    }
+    
+    private_dsg_->graph->setMesh(std::make_shared<spark_dsg::Mesh>());
+    // Normal initialization
+    original_vertices_.reset(new pcl::PointCloud<pcl::PointXYZ>());
+  }
+  
   unmerged_graph_->setMesh(private_dsg_->graph->mesh());
-  original_vertices_.reset(new pcl::PointCloud<pcl::PointXYZ>());
   deformation_graph_->setForceRecalculate(!config.pgmo.gnc_fix_prev_inliers);
   setSolverParams();
 
@@ -170,27 +218,57 @@ void BackendModule::stop() { stopImpl(); }
 
 void BackendModule::save(const LogSetup& log_setup) {
   std::lock_guard<std::mutex> lock(mutex_);
+  LOG(INFO) << "==============================================";
+  LOG(INFO) << "Backend Save Process Started";
+  LOG(INFO) << "==============================================";
+  
   const auto backend_path = log_setup.getLogDir("backend");
   const auto pgmo_path = log_setup.getLogDir("backend/pgmo");
+  
+  LOG(INFO) << "[1/5] Saving scene graph (DSG)...";
   private_dsg_->graph->save(backend_path + "/dsg.json", false);
-  private_dsg_->graph->save(backend_path + "/dsg_with_mesh.json");
+  LOG(INFO) << "      Scene graph saved to: " << backend_path + "/dsg.json";
+  // private_dsg_->graph->save(backend_path + "/dsg_with_mesh.json");
+  
+  LOG(INFO) << "[2/5] Saving pose graph mapping...";
   savePoseGraphSparseMapping(pgmo_path + "/sparsification_mapping.txt");
 
   const auto& prefix = GlobalInfo::instance().getRobotPrefix();
   if (deformation_graph_->hasPrefixPoses(prefix.key)) {
+    LOG(INFO) << "[3/5] Saving optimized trajectory...";
     const auto optimized_path = getOptimizedTrajectory(prefix.id);
     std::string csv_name = pgmo_path + "/traj_pgmo.csv";
     saveTrajectory(optimized_path, timestamps_, csv_name);
+    LOG(INFO) << "      Trajectory saved to: " << csv_name;
+  } else {
+    LOG(INFO) << "[3/5] No trajectory to save (skipped)";
   }
 
   const auto mesh = private_dsg_->graph->mesh();
   if (mesh && !mesh->empty()) {
+    LOG(INFO) << "[4/5] Saving 3D mesh (this may take time for large meshes)...";
+    LOG(INFO) << "      Mesh size: " << mesh->numVertices() << " vertices, "
+              << mesh->numFaces() << " faces";
+    LOG(INFO) << "      Writing to: " << backend_path + "/mesh.ply";
+    LOG(INFO) << "      Please wait...";
+    
     // mesh implements vertex and face traits
     kimera_pgmo::WriteMesh(backend_path + "/mesh.ply", *mesh, *mesh);
+    
+    LOG(INFO) << "      ✓ Mesh saved successfully!";
+    
+    // Release mesh to speed up destruction
+    LOG(INFO) << "      Releasing mesh to speed up destruction...";
+    private_dsg_->graph->setMesh(nullptr);
+    // Note: unmerged_graph_ shares the same mesh, so it will also become nullptr
+  } else {
+    LOG(INFO) << "[4/5] No mesh to save (mesh is empty or not available)";
   }
 
+  LOG(INFO) << "[5/5] Saving deformation graph...";
   deformation_graph_->update();  // Update before saving
   deformation_graph_->save(pgmo_path + "/deformation_graph.dgrf");
+  LOG(INFO) << "      Deformation graph saved to: " << pgmo_path + "/deformation_graph.dgrf";
 
   const std::string output_csv = backend_path + "/loop_closures.csv";
   std::ofstream output_file;
@@ -215,6 +293,10 @@ void BackendModule::save(const LogSetup& log_setup) {
     output_file << (loop_closure.dsg ? 1 : 0) << "," << loop_closure.level;
     output_file << std::endl;
   }
+  
+  LOG(INFO) << "==============================================";
+  LOG(INFO) << "Backend Save Process Completed Successfully!";
+  LOG(INFO) << "==============================================";
 }
 
 std::string BackendModule::printInfo() const {
@@ -451,7 +533,13 @@ void BackendModule::copyMeshDelta(const BackendInput& input) {
   // we use this to make sure that deformation only happens for vertices that are
   // still active
   num_archived_vertices_ = input.mesh_update->getTotalArchivedVertices();
-  utils::updatePlaces2d(private_dsg_, *input.mesh_update, num_archived_vertices_);
+  
+  // In continue_mapping mode, update all nodes (including loaded/inactive ones)
+  // to keep their mesh indices up-to-date
+  const bool is_continue_mapping = 
+      GlobalInfo::instance().getConfig().continue_mapping;
+  utils::updatePlaces2d(private_dsg_, *input.mesh_update, num_archived_vertices_,
+                        is_continue_mapping);
 
   have_new_mesh_ = true;
 }

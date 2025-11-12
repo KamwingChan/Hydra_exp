@@ -37,7 +37,10 @@
 #include <config_utilities/config.h>
 #include <glog/logging.h>
 
+#include <chrono>
 #include <filesystem>
+#include <iomanip>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -67,12 +70,25 @@ LogSetup::LogSetup(const LogConfig& conf) : valid_(false), config_(conf) {
     return;
   }
 
+  // 接收来自launch文件的路径, e.g., "output/my_dataset"
   fs::path log_path(config_.log_dir);
+
+  // 获取当前时间并格式化
+  const auto now = std::chrono::system_clock::now();
+  const auto in_time_t = std::chrono::system_clock::to_time_t(now);
+  std::stringstream ss;
+  ss << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d_%H-%M");
+
+  // 将时间戳追加到现有路径后
+  log_path = log_path / ss.str();
+
   if (!makeDirs(log_path)) {
     LOG(WARNING) << "Failed to make dir: " << log_path << ". logging Disabled!";
     return;
   }
 
+  // 关键: 用新的完整路径覆盖配置中的原始路径
+  config_.log_dir = log_path.string();
   valid_ = true;
 }
 

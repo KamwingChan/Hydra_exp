@@ -106,13 +106,24 @@ void updatePlace2dBoundary(Place2dNodeAttributes& attrs,
 
 void updatePlaces2d(SharedDsgInfo::Ptr dsg,
                     kimera_pgmo::MeshDelta& mesh_update,
-                    size_t num_archived_vertices) {
+                    size_t num_archived_vertices,
+                    bool update_all_nodes) {
   if (!dsg->graph->hasLayer(DsgLayers::MESH_PLACES)) {
     return;
   }
+  
   for (auto& id_node_pair : dsg->graph->getLayer(DsgLayers::MESH_PLACES).nodes()) {
     auto& attrs = id_node_pair.second->attributes<spark_dsg::Place2dNodeAttributes>();
-    if (!attrs.has_active_mesh_indices) {
+    
+    // If update_all_nodes is true (e.g., in continue_mapping mode),
+    // update all nodes with mesh connections
+    // Otherwise, only update nodes with active mesh indices
+    if (!update_all_nodes && !attrs.has_active_mesh_indices) {
+      continue;
+    }
+    
+    // Skip nodes with no mesh connections for performance
+    if (attrs.pcl_mesh_connections.empty()) {
       continue;
     }
 

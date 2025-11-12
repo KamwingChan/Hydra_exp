@@ -4,7 +4,6 @@ clio/
 config_utilities/
 dbow2_catkin/
 khronos/
-kimera_pgmo/
 kimera_rpgo/
 opengv_catkin/
 pose_graph_tools/

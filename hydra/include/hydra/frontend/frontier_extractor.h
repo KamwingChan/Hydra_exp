@@ -63,6 +63,11 @@ class FrontierExtractor {
 
   void updateRecentBlocks(const Eigen::Vector3d& current_position, double block_size);
 
+  // Initialize next_node_id_ from an existing graph (continue mapping). No-op if
+  // the target layer is missing. This avoids id collisions without affecting
+  // fresh mapping.
+  void initializeFromGraph(const DynamicSceneGraph& graph);
+
   void detectFrontiers(const ActiveWindowOutput& input,
                        DynamicSceneGraph& graph,
                        const NodeIdSet& active_places);

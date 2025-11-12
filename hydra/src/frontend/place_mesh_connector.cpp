@@ -133,7 +133,7 @@ size_t PlaceMeshConnector::addConnections(const SceneGraphLayer& places,
       // assign (potentially valid) deformation connection
       attrs.deformation_connections.push_back(mapping.at(local_idx));
 
-      if (has_labels) {
+      if (has_labels && local_idx < delta_->semantic_updates.size()) {
         const auto label = delta_->semantic_updates.at(local_idx);
         attrs.mesh_vertex_labels.push_back(label);
         vertex.label = label;

@@ -94,6 +94,36 @@ Place2dSegmenter::Place2dSegmenter(const Config& config)
   for (const auto& label : config.labels) {
     active_places_[label] = std::set<NodeId>();
   }
+  VLOG(1) << "[P2D] ctor next=" << NodeSymbol(next_node_id_).getLabel();
+}
+
+void Place2dSegmenter::initializeFromGraph(const DynamicSceneGraph& graph) {
+  if (!graph.hasLayer(DsgLayers::MESH_PLACES)) {
+    return;
+  }
+
+  // Initialize num_archived_vertices_ from loaded graph
+  if (graph.hasMesh() && graph.mesh()->numVertices() > 0) {
+    num_archived_vertices_ = graph.mesh()->numVertices();
+    LOG(INFO) << "[P2D] Initialized num_archived_vertices_ to " << num_archived_vertices_
+              << " from loaded graph";
+  }
+
+  NodeId max_id = 0;
+  const auto& layer = graph.getLayer(DsgLayers::MESH_PLACES);
+  for (const auto& id_node_pair : layer.nodes()) {
+    max_id = std::max(max_id, id_node_pair.first);
+    const auto& attrs = id_node_pair.second->attributes<Place2dNodeAttributes>();
+    if (attrs.is_active) {
+      active_places_[attrs.semantic_label].insert(id_node_pair.first);
+    }
+  }
+  if (max_id > 0) {
+    const auto next_index = NodeSymbol(max_id).categoryId() + 1;
+    next_node_id_ = NodeSymbol(next_node_id_.category(), next_index);
+    VLOG(1) << "[P2D] Initialized next_node_id to " << NodeSymbol(next_node_id_).getLabel()
+            << " based on existing graph";
+  }
 }
 
 Places Place2dSegmenter::findPlaces(const Mesh::Positions& points,
@@ -487,3 +517,5 @@ void declare_config(Place2dSegmenter::Config& config) {
 }
 
 }  // namespace hydra
+
+

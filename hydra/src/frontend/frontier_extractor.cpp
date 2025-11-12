@@ -122,7 +122,9 @@ void splitAllFrontiers(std::vector<std::vector<Eigen::Vector3f>>& frontiers,
 FrontierExtractor::FrontierExtractor(const Config& config)
     : config(config),
       next_node_id_(config.prefix, 0),
-      map_window_(GlobalInfo::instance().createVolumetricWindow()) {}
+      map_window_(GlobalInfo::instance().createVolumetricWindow()) {
+  VLOG(1) << "[Frontier] ctor next=" << NodeSymbol(next_node_id_).getLabel();
+}
 
 void clusterFrontiers(const SpatialCloud::Ptr cloud,
                       const double cluster_tolerance,
@@ -424,6 +426,22 @@ void FrontierExtractor::updateTsdf(const ActiveWindowOutput& msg) {
 
   for (const auto& block : tsdf_update) {
     tsdf_->allocateBlock(block.index) = block;
+  }
+}
+
+void FrontierExtractor::initializeFromGraph(const DynamicSceneGraph& graph) {
+
+  if (!graph.hasLayer(DsgLayers::PLACES)) {
+    return;
+  }
+  NodeId max_id = 0;
+  const auto& layer = graph.getLayer(DsgLayers::PLACES);
+  for (const auto& [id, _] : layer.nodes()) max_id = std::max(max_id, id);
+  if (max_id > 0) {
+    const auto next_index = NodeSymbol(max_id).categoryId() + 1;
+    next_node_id_ = NodeSymbol(next_node_id_.category(), next_index);
+    VLOG(1) << "[Frontier] Initialized next_node_id to " << NodeSymbol(next_node_id_).getLabel()
+            << " based on existing graph";
   }
 }
 
