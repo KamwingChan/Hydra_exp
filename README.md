@@ -1,9 +1,10 @@
 # Hydra_exp
 ## Introduction
-Learning [README.md](https://blog.csdn.net/weixin_49941024/article/details/147166930?utm_medium=distribute.pc_relevant.none-task-blog-2~default~baidujs_utm_term~default-0-147166930-blog-129700568.235^v43^pc_blog_bottom_relevance_base6&spm=1001.2101.3001.4242.1&utm_relevant_index=2).
 An experiment of deploying Hydra on __Realsense D455__, including semantic_inference and kimera_vio modules.
+__New__ (25.07)The hydra system is now running on isaacsim too.
+__New__ (25.09)The "Continue Mapping" feature is currently in early development. Use with caution.
 
-## Follow [Hydra](/hydra/README.md) to finish quick start
+## Follow [Hydra](/hydra/README.md) to finish quick start !!! Choose the ros1 branch
 ```bash
 cd catkin_ws/src
 git clone https://github.com/KamwingChan/Hydra_exp.git
@@ -20,16 +21,16 @@ roslaunch kimera_vio_ros kimera_vio_d455.launch
 
 ```
 ## Future Work
-- [ ] Room Classification
-- [ ] SpatialLM
+- [ ] Room Classification(Coming soon)
+- [ ] Continue Mapping Mode(Coming soon)
 - [x] [Physical information](/physical_inference)
+- [ ] Application (Task)
 - [ ] Paper
 
 ## Physical imformation
 ### Our Method
 
-- [ ] VLN
-- [ ] SpatialLM
+- [ ] Scene Graph Based Planning
 - [x] Material Perception
 
 ## Developer tools
