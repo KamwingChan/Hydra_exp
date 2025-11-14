@@ -6,26 +6,45 @@ __New__ (25.07)The hydra system is now running on isaacsim too.
 
 __New__ (25.09)The "Continue Mapping" feature is currently in early development. Use with caution.
 
-## Follow [Hydra](/hydra/README.md) to finish quick start !!! Choose the ros1 branch
+
+## Follow [Hydra](https://github.com/MIT-SPARK/Hydra/tree/archive/ros_noetic) to finish quick start !!! Choose the ros1 branch!!!
 ```bash
 cd catkin_ws/src
+git clone -b archive/ros_noetic https://github.com/MIT-SPARK/Hydra.git
+vcs import . < hydra/install/hydra.rosinstall
+rosdep install --from-paths . --ignore-src -r -y
+rm -f hydra hydra_ros semantic_inference kimera_pgmo 
 git clone https://github.com/KamwingChan/Hydra_exp.git
-catkin build kimera_vio_ros -j16
-catkin build semantic_inference_ros
+git clone -b ros1-legacy https://github.com/IntelRealSense/realsense-ros.git
+catkin build
 mv hydra_realsense.launch realsense-ros/realsense2_camera/launch
 ```
 ## Launch Method (In seperate terminal)
 Using semantic_inference as semantic input (Mask2former segmenter is under develop)
+
+Realsense example
 ```bash
 roslaunch hydra_ros realsense.launch model_name:=ade20k-segformer-b5
 roslaunch realsense2_camera hydra_realsense.launch
 roslaunch kimera_vio_ros kimera_vio_d455.launch 
-
 ```
+
+Isaaclab example (Forest Navigation)
+```bash
+roslaunch hydra_ros isaacsim.launch model_name:=ade20k-segformer-b5 sim_time_required:=true
+
+//In seperate bash
+conda activate <your isaaclab env>
+python ./scripts/rsl_rl/keyboard.py \
+    --task=Forestnavigation-Keyboard-Play-v0 \
+    --enable_cameras \
+    --enable-ros
+```
+
 ## Future Work
 - [ ] Room Classification(Coming soon)
 - [ ] Continue Mapping Mode(Coming soon)
-- [x] [Physical information](/physical_inference)
+- [x] Physical information
 - [ ] Application (Task)
 - [ ] Paper
 
