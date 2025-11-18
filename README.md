@@ -13,7 +13,7 @@ cd catkin_ws/src
 git clone -b archive/ros_noetic https://github.com/MIT-SPARK/Hydra.git
 vcs import . < hydra/install/hydra.rosinstall
 rosdep install --from-paths . --ignore-src -r -y
-rm -f hydra hydra_ros semantic_inference kimera_pgmo 
+rm -rf hydra hydra_ros semantic_inference kimera_pgmo 
 git clone https://github.com/KamwingChan/Hydra_exp.git
 git clone -b ros1-legacy https://github.com/IntelRealSense/realsense-ros.git
 catkin build
