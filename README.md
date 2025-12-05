@@ -4,7 +4,7 @@ An experiment of deploying Hydra on __Realsense D455__, including semantic_infer
 
 __New__ (25.09)The "Continue Mapping" feature is currently in early development. Use with caution.
 
-__New__ (25.11)The A big update on Phy_graph, and Phy_plan is coming soon
+__New__ (25.11)A big update on Phy_graph, and Phy_plan is coming soon
 
 __New__ (25.12)Available on [BEHAVIOR-1k](https://behavior.stanford.edu/index.html), check the [script](/phy_plan/env) in /phy_plan/env
 
