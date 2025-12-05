@@ -6,7 +6,7 @@ __New__ (25.09)The "Continue Mapping" feature is currently in early development.
 
 __New__ (25.11)The A big update on Phy_graph, and Phy_plan is coming soon
 
-__New__ (25.12)Available on [BEHAVIOR-1k](https://behavior.stanford.edu/index.html), check the script in /phy_plan/env
+__New__ (25.12)Available on [BEHAVIOR-1k](https://behavior.stanford.edu/index.html), check the [script](/phy_plan/env) in /phy_plan/env
 
 ## Follow [Hydra](https://github.com/MIT-SPARK/Hydra/tree/archive/ros_noetic) to finish quick start !!! Choose the ros1 branch!!!
 ```bash
