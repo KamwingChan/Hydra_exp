@@ -1,0 +1,25 @@
+# Core dependencies
+numpy>=1.19.0
+open3d>=0.13.0
+
+# Visualization
+matplotlib>=3.3.0
+seaborn>=0.11.0
+scipy>=1.5.0
+
+# Network communication for Open3D visualization
+pyzmq>=20.0.0
+
+# Spark DSG (Dynamic Scene Graph)
+# Note: spark_dsg is a custom package that needs to be installed separately
+# It is typically provided by the Hydra project or installed via:
+#   - pip install spark-dsg (if available on PyPI)
+#   - Or build from source from the Hydra repository
+#   - Or use conda environment with phyplan (as mentioned in code comments)
+#
+# For installation instructions, refer to the Hydra documentation or project README
+
+# Standard library modules used (no installation needed):
+# - pathlib, typing, dataclasses, tempfile, os, json, traceback
+# - time, heapq, collections (from Python standard library)
+

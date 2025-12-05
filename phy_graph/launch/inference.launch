@@ -31,4 +31,13 @@
         <param name="label_space" value="$(arg label_space)" />
         <param name="/debug_save_images" value="$(arg debug_save_images)"/>
     </node>
+    
+    <!-- 3. Start the Graph Generator Node (The "Integrator") -->
+    <!-- This node reads the JSONs from step 2 and the DSG, then builds the enhanced graph -->
+    <node name="graph_generator_node" 
+          pkg="phy_graph" 
+          type="graph_generator_node" 
+          output="screen">
+    </node>
+
 </launch>

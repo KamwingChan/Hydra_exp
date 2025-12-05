@@ -21,8 +21,13 @@ class PhysicalInferenceServer:
         
         base_url = os.environ.get("OPENAI_API_BASE")
 
-        self.inference_tool = PhysicalInference(api_key=api_key, base_url=base_url)
-        rospy.loginfo("Initialized PhysicalInference client.")
+        # 使用更快的 gpt-4o-mini 模型 (via OpenRouter 命名空间)
+        self.inference_tool = PhysicalInference(
+            api_key=api_key, 
+            base_url=base_url,
+            model_name="openai/gpt-4o-mini"
+        )
+        rospy.loginfo(f"Initialized PhysicalInference client with model: {self.inference_tool.model_name}")
         
         # CV Bridge for image conversion
         self.bridge = CvBridge()
@@ -52,11 +57,11 @@ class PhysicalInferenceServer:
                 rospy.logerr(f"Failed to convert image: {e}")
                 return GetPropertiesResponse()
             
-            # 直接从内存中的图像进行推理，无需保存临时文件
+            # Directly infer from memory without saving temporary files
             rospy.loginfo(f"Sending image to VLM for inference...")
             properties = self.inference_tool.get_properties_from_image(cv_image, req.label)
 
-            # 5. 验证响应
+            # Validate response
             if "error" in properties:
                 error_msg = properties['error']
                 rospy.logerr(f"Inference failed: {error_msg}")
@@ -70,7 +75,7 @@ class PhysicalInferenceServer:
                 rospy.logerr(f"Full properties response: {properties}")
                 return GetPropertiesResponse()
 
-            # 6. 构建响应
+            # Build response
             response = GetPropertiesResponse()
             response.description = properties.get("description", "")
             response.friction_level = properties.get("friction_level", 0)

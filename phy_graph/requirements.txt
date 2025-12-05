@@ -1,0 +1,25 @@
+# Core dependencies for phy_graph
+# Image processing
+opencv-python>=4.5.0
+
+# OpenAI API client for VLM inference
+openai>=1.0.0
+
+# Numerical computing (used in tests)
+numpy>=1.19.0
+
+# Image processing library (used in tests)
+Pillow>=8.0.0
+
+# Note: ROS dependencies (rospy, cv_bridge, sensor_msgs) are typically installed
+# via the ROS system and catkin workspace, not via pip.
+# These include:
+# - rospy (ROS Python client library)
+# - cv_bridge (ROS OpenCV bridge)
+# - sensor_msgs (ROS message types)
+#
+# Install ROS dependencies via:
+#   sudo apt-get install ros-noetic-cv-bridge ros-noetic-rospy
+#
+# Or ensure your catkin workspace is properly built and sourced.
+

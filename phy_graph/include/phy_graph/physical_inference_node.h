@@ -28,33 +28,15 @@
 // Our custom service
 #include <phy_graph/GetProperties.h>
 
-class ImageCache {
-public:
-    struct CachedImage {
-        ros::Time timestamp;
-        cv::Mat rgb_image;
-        Eigen::Isometry3d world_T_camera;
-    };
-    
-    ImageCache(size_t max_size = 100) : max_size_(max_size) {}
-    
-    void addImage(const sensor_msgs::ImageConstPtr& msg,
-                  const Eigen::Isometry3d& world_T_camera);
-    
-    std::vector<CachedImage> getImagesInRange(
-        ros::Time start, ros::Time end) const;
-    
-    size_t size() const { return cache_.size(); }
-    void clear() { cache_.clear(); }
-    
-private:
-    std::deque<CachedImage> cache_;
-    const size_t max_size_;
-    mutable std::mutex cache_mutex_;
-};
+// New Keyframe Database
+#include "phy_graph/keyframe_database.h"
+
+#include <ros/callback_queue.h> // 必须添加
+#include <thread>
 
 class PhysicalInferenceNode {
 public:
+    EIGEN_MAKE_ALIGNED_OPERATOR_NEW
     PhysicalInferenceNode(ros::NodeHandle& nh, ros::NodeHandle& pnh);
     ~PhysicalInferenceNode(); 
 
@@ -94,12 +76,13 @@ private:
         const Eigen::Isometry3d& world_T_camera,
         const cv::Size& image_size);
     
-    std::string extractBestObjectImage(
+    // Optimized: Return cv::Mat directly and score
+    std::pair<cv::Mat, double> extractBestObjectImage(
         const hydra::ObjectNodeAttributes& attrs,
         const kimera_pgmo_msgs::KimeraPgmoMesh& mesh);
 
     std::vector<ScoredImage> scoreCandidateImages(
-        const std::vector<ImageCache::CachedImage>& images,
+        const std::vector<phy_graph::KeyframeDatabase::Keyframe>& images,
         const hydra::ObjectNodeAttributes& attrs,
         const kimera_pgmo_msgs::KimeraPgmoMesh& mesh);
 
@@ -139,7 +122,9 @@ private:
     // image cache members
     ros::Subscriber rgb_sub_;
     ros::Subscriber camera_info_sub_;
-    std::shared_ptr<ImageCache> image_cache_;
+    
+    // NEW: Use KeyframeDatabase instead of ImageCache
+    std::shared_ptr<phy_graph::KeyframeDatabase> keyframe_db_;
     
     // TF members
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
@@ -156,4 +141,9 @@ private:
     
     // debug members
     bool debug_save_images_;  
+
+    // 专用回调队列
+    ros::CallbackQueue rgb_queue_;
+    // 专用 Spinner (使用 unique_ptr 延迟初始化)
+    std::unique_ptr<ros::AsyncSpinner> rgb_spinner_;
 };

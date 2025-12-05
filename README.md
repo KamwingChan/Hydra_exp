@@ -2,10 +2,11 @@
 ## Introduction
 An experiment of deploying Hydra on __Realsense D455__, including semantic_inference and kimera_vio modules.
 
-__New__ (25.07)The hydra system is now running on isaacsim too.
-
 __New__ (25.09)The "Continue Mapping" feature is currently in early development. Use with caution.
 
+__New__ (25.11)The A big update on Phy_graph, and Phy_plan is coming soon
+
+__New__ (25.12)Available on [BEHAVIOR-1k](https://behavior.stanford.edu/index.html), check the script in /phy_plan/env
 
 ## Follow [Hydra](https://github.com/MIT-SPARK/Hydra/tree/archive/ros_noetic) to finish quick start !!! Choose the ros1 branch!!!
 ```bash
@@ -42,17 +43,17 @@ python ./scripts/rsl_rl/keyboard.py \
 ```
 
 ## Future Work
-- [ ] Room Classification(Coming soon)
-- [ ] Continue Mapping Mode(Coming soon)
+- [x] Room Classification(Needed Advanced)
+- [x] Continue Mapping Mode
 - [x] Physical information
-- [ ] Application (Task)
+- [ ] Phy_plan (on-going)
 - [ ] Paper
 
 ## Physical imformation
 ### Our Method
 
 - [ ] Scene Graph Based Planning
-- [x] Material Perception
+- [x] Enhanced Scene Graph via phy_graph
 
 ## Developer tools
 ### Using [mmlab](https://github.com/open-mmlab/mmdeploy/blob/main/docs/en/04-supported-codebases/mmdet.md#supported-models)

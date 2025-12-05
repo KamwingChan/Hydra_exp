@@ -5,21 +5,24 @@ import os
 import json
 import base64
 import cv2
+import time
 from openai import OpenAI
 
 
 class PhysicalInference:
     """A class to infer physical properties of an object from an image."""
 
-    def __init__(self, api_key, base_url=None):
+    def __init__(self, api_key, base_url=None, model_name="openai/gpt-4o-mini"):
         """
         Initializes the PhysicalInference client.
         :param api_key: Your OpenAI API key.
         :param base_url: The base URL for the API, for use with services like OpenRouter.
+        :param model_name: The model to use (e.g., 'gpt-4o', 'openai/gpt-4o' for OpenRouter).
         """
         if not api_key:
             raise ValueError("OpenAI API key is required.")
         self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.model_name = model_name
 
     def _encode_image_to_base64(self, image_path):
         """Encodes an image file to a base64 string."""
@@ -27,8 +30,10 @@ class PhysicalInference:
             return base64.b64encode(image_file.read()).decode('utf-8')
     
     def _encode_cv_image_to_base64(self, cv_image):
-        """Encodes an OpenCV image to a base64 string."""
-        success, buffer = cv2.imencode('.jpg', cv_image)
+        """Encodes an OpenCV image to a base64 string with compression."""
+        # Set JPEG quality to 85 to reduce size without significant visual loss for VLM
+        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
+        success, buffer = cv2.imencode('.jpg', cv_image, encode_param)
         if not success:
             raise ValueError("Failed to encode image")
         return base64.b64encode(buffer).decode('utf-8')
@@ -63,13 +68,14 @@ class PhysicalInference:
         
         return content
     
-    def get_properties_from_image(self, cv_image, label) -> dict:
+    def get_properties_from_image(self, cv_image, label, max_retries=3) -> dict:
         """
-        
-        :param cv_image: 
-        :param label: 
+        Infer physical properties from an image using VLM.
+        :param cv_image: OpenCV image
+        :param label: Object label
+        :param max_retries: Number of retry attempts for API calls
         """
-        print(f"[DEBUG] Processing image directly from memory with label: {label}")
+        print(f"[DEBUG] Processing image directly from memory with label: {label} using model: {self.model_name}")
         
         try:
             base64_image = self._encode_cv_image_to_base64(cv_image)
@@ -90,58 +96,73 @@ class PhysicalInference:
         Do not include any text outside of the JSON object itself.
         """
 
-        try:
-            print("[DEBUG] Sending request to OpenAI/OPENROUTER API...")
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt_text},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{base64_image}"
-                                }
-                            }
-                        ]
-                    }
-                ],
-                max_tokens=300
-            )
-            
-            if not hasattr(response, 'choices') or not response.choices:
-                print("[ERROR] No choices in API response")
-                return {"error": "No choices in API response"}
-            
-            print(f"[DEBUG] Number of choices: {len(response.choices)}")
-            
-            first_choice = response.choices[0]
-            if not hasattr(first_choice, 'message') or not first_choice.message:
-                print("[ERROR] No message in first choice")
-                return {"error": "No message in API response"}
-            
-            message_content = first_choice.message.content
-            print(f"[DEBUG] Content type: {type(message_content)}, length: {len(message_content) if message_content else 0}")
-            
-            if not message_content:
-                print("[ERROR] Empty message content")
-                return {"error": "Empty response content from API"}
-            
-            cleaned_content = self._clean_json_response(message_content)
-            print(f"[DEBUG] Cleaned content: '{cleaned_content}'")
-            
+        for attempt in range(max_retries):
             try:
-                parsed_result = json.loads(cleaned_content)
-                return parsed_result
-            except json.JSONDecodeError as json_error:
-                print(f"[ERROR] JSON parsing failed: {json_error}")
-                print(f"[ERROR] Original content: '{message_content}'")
-                print(f"[ERROR] Cleaned content that failed to parse: '{cleaned_content}'")
-                return {"error": f"Invalid JSON response: {str(json_error)}"}
-        
-        except Exception as e:
-            print(f"[ERROR] An error occurred while communicating with OpenAI API: {e}")
-            print(f"[ERROR] Exception type: {type(e)}")
-            return {"error": str(e)}
+                print(f"[DEBUG] Sending request to OpenAI/OpenRouter API (Attempt {attempt+1}/{max_retries})...")
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt_text},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{base64_image}"
+                                    }
+                                }
+                            ]
+                        }
+                    ],
+                    max_tokens=300
+                )
+                
+                if not hasattr(response, 'choices') or not response.choices:
+                    print("[ERROR] No choices in API response")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                        continue
+                    return {"error": "No choices in API response"}
+                
+                first_choice = response.choices[0]
+                if not hasattr(first_choice, 'message') or not first_choice.message:
+                    print("[ERROR] No message in first choice")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                        continue
+                    return {"error": "No message in API response"}
+                
+                message_content = first_choice.message.content
+                
+                if not message_content:
+                    print("[ERROR] Empty message content")
+                    if attempt < max_retries - 1:
+                        time.sleep(1)
+                        continue
+                    return {"error": "Empty response content from API"}
+                
+                cleaned_content = self._clean_json_response(message_content)
+                # print(f"[DEBUG] Cleaned content: '{cleaned_content}'")
+                
+                try:
+                    parsed_result = json.loads(cleaned_content)
+                    return parsed_result
+                except json.JSONDecodeError as json_error:
+                    print(f"[ERROR] JSON parsing failed: {json_error}")
+                    # Only retry JSON errors if it's not the last attempt
+                    if attempt < max_retries - 1:
+                        print("[DEBUG] Retrying due to JSON error...")
+                        time.sleep(1)
+                        continue
+                    return {"error": f"Invalid JSON response: {str(json_error)}"}
+            
+            except Exception as e:
+                print(f"[ERROR] An error occurred while communicating with API: {e}")
+                if attempt < max_retries - 1:
+                    print(f"[DEBUG] Retrying in 2 seconds...")
+                    time.sleep(2)
+                else:
+                    return {"error": str(e)}
+
+        return {"error": "Max retries exceeded"}
