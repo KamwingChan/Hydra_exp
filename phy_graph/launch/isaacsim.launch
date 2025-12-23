@@ -19,7 +19,7 @@
         <remap from="input_mesh" to="/hydra_dsg_visualizer/dsg_mesh" />
 
         <!-- Load parameters into the node's private namespace -->
-        <rosparam command="load" file="$(find phy_graph)/config/ade20k.yaml" />
+        <rosparam command="load" file="$(find phy_graph)/config/label_spaces/$(arg label_space).yaml" />
         <param name="label_space" value="$(arg label_space)" />
     </node>
 </launch>

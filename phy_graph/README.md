@@ -184,7 +184,7 @@ phy_graph/
 │   ├── imageProcessor.cpp    # Image projection and scoring
 │   ├── keyframe_database.cpp # Keyframe storage
 │   ├── graphGen.cpp          # Graph generator main
-│   ├── graph_generator_analytics.cpp  # DSG extraction logic
+│   ├── scene_graph_builder.cpp  # DSG extraction logic
 │   ├── graph_generator_io.cpp         # JSON I/O
 │   └── phy_graph_lib/        # Python library
 │       └── inferenceCore.py  # VLM inference core

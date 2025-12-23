@@ -6,12 +6,17 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <map>
+
+// Forward declare RoomClassifier to avoid circular include
+namespace phy_graph {
+class RoomClassifier;
+}
 
 #include <hydra/common/dsg_types.h>
 #include <hydra_ros/utils/dsg_streaming_interface.h>
 #include <kimera_pgmo_msgs/KimeraPgmoMesh.h>
 
-#include <boost/filesystem.hpp>
 #include <Eigen/Geometry>
 
 namespace phy_graph {
@@ -167,28 +172,8 @@ private:
         const hydra::DynamicSceneGraph::Ptr& graph);
     
     // ============ 房间分析模块 ============
-    
-    /**
-     * @brief 推理房间类型
-     * 
-     * 使用稳定性追踪和基于规则的推理:
-     * 1. 只有当房间在一定时间内保持稳定时才进行推理
-     * 2. 基于房间内对象组合推理 (e.g., bed+nightstand -> bedroom)
-     * 
-     * @param room 房间节点
-     * @param objects 该房间内的所有对象
-     * @return 房间类型字符串
-     */
-    std::string inferRoomCategory(
-        const RoomNode& room,
-        const std::vector<EnhancedObjectNode>& objects);
-    
-    /**
-     * @brief 清理过期的房间状态跟踪器
-     * @param current_rooms 当前存在的房间列表
-     */
-    void cleanupStaleTrackers(const std::vector<RoomNode>& current_rooms);
-    
+    // 分类逻辑由 RoomClassifier 负责
+
     /**
      * @brief 生成房间描述
      * 
@@ -245,12 +230,18 @@ private:
     
     // 输出目录
     std::string output_dir_;
+
+    // 物理推理结果来源目录（用于追溯/归档 scene graph）
+    // - physical_source_dir_path_: 绝对路径，如 ".../phy_graph/output/2025-12-10_00-54-12"
+    // - physical_source_dir_name_: 目录名，如 "2025-12-10_00-54-12"
+    std::string physical_source_dir_path_;
+    std::string physical_source_dir_name_;
     
     // 已处理的DSG时间戳，避免重复处理
     std::unordered_set<uint64_t> processed_dsg_timestamps_;
 
-    // 房间状态跟踪器 (RoomId -> RoomInfo)
-    std::unordered_map<std::string, RoomInfo> room_states_;
+    // 房间分类器
+    std::unique_ptr<RoomClassifier> room_classifier_;
 };
 
 } // namespace phy_graph

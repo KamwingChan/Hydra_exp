@@ -3,7 +3,7 @@
 #include <fstream>
 #include <iomanip>
 #include <ctime>
-#include <boost/filesystem.hpp>
+#include <filesystem>
 #include <ros/package.h>
 #include <hydra/common/dsg_types.h>
 
@@ -156,7 +156,8 @@ std::pair<cv::Mat, double> PhysicalInferenceNode::extractBestObjectImage(
 
     // Archive image for future reference (dataset creation)
     std::string archive_dir = output_dir_ + "/objects";
-    boost::filesystem::create_directories(archive_dir);
+    std::error_code ec;
+    std::filesystem::create_directories(archive_dir, ec);
     std::stringstream ss;
     ss << archive_dir << "/object_" << attrs.name << ".jpg";
     cv::imwrite(ss.str(), final_image);

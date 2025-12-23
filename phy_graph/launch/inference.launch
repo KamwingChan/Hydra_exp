@@ -27,7 +27,7 @@
         <remap from="camera_info" to="$(arg camera_info_topic)" />
 
         <!-- Load parameters into the node's private namespace -->
-        <rosparam command="load" file="$(find phy_graph)/config/ade20k.yaml" />
+        <rosparam command="load" file="$(find phy_graph)/config/label_spaces/$(arg label_space).yaml" />
         <param name="label_space" value="$(arg label_space)" />
         <param name="/debug_save_images" value="$(arg debug_save_images)"/>
     </node>

@@ -68,9 +68,11 @@ target_link_libraries(phy_graph_node
 # Graph Generator Node
 # ============================================================
 add_executable(graph_generator_node 
-  src/graphGen.cpp
-  src/graph_generator_analytics.cpp
+  src/graph_generator_node.cpp
+  src/scene_graph_builder.cpp
   src/graph_generator_io.cpp
+  src/graph_utils.cpp
+  src/room_classifier.cpp
 )
 add_dependencies(graph_generator_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(graph_generator_node

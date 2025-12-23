@@ -1,0 +1,169 @@
+============================================================
+Chair Arrangement Experiment (with Hungarian Algorithm)
+============================================================
+
+Loading scene graph from: /home/kamwing/catkin_ws/src/phy_plan/phy_plan/experiments/scene_graph.json
+
+SceneGraph (source: phy_graph)
+  Timestamp: 2025-12-18_15:12:12
+  Rooms: 0
+  Objects: 10
+
+Categories:
+  - swivel_chair: 8
+  - conference_table: 2
+
+[Objects] Found 8 chairs and 2 tables
+
+Chairs:
+  - O(2) (swivel_chair): position=[-0.00, -2.50]
+  - O(3) (swivel_chair): position=[-0.35, -3.72]
+  - O(4) (swivel_chair): position=[-0.87, -2.05]
+  - O(5) (swivel_chair): position=[-1.53, 2.03]
+  - O(6) (swivel_chair): position=[-3.12, 4.35]
+  - O(7) (swivel_chair): position=[-5.68, 2.51]
+  - O(8) (swivel_chair): position=[-5.77, -2.84]
+  - O(9) (swivel_chair): position=[-4.73, -5.76]
+
+Tables:
+  - O(0) (conference_table): position=[-3.08, -4.33]
+  - O(1) (conference_table): position=[-3.08, 0.81]
+
+[Grouping] Chairs grouped by nearest table:
+  - O(0): 5 chairs
+  - O(1): 3 chairs
+
+[Targets] Generated 5 target positions around O(0)
+    Target 0: [-3.75, -5.43]
+    Target 1: [-3.08, -5.43]
+    Target 2: [-2.41, -5.43]
+    Target 3: [-3.75, -3.23]
+    Target 4: [-3.08, -3.23]
+
+[Assignment] Hungarian algorithm result (cost: 12.52):
+    O(2) -> Target 1 (move: 4.25m)
+    O(3) -> Target 2 (move: 2.68m)
+    O(4) -> Target 4 (move: 2.50m)
+    O(8) -> Target 3 (move: 2.06m)
+    O(9) -> Target 0 (move: 1.03m)
+
+[Targets] Generated 3 target positions around O(1)
+    Target 0: [-3.58, -0.29]
+    Target 1: [-2.58, -0.29]
+    Target 2: [-3.58, 1.91]
+
+[Assignment] Hungarian algorithm result (cost: 8.53):
+    O(5) -> Target 1 (move: 2.54m)
+    O(6) -> Target 2 (move: 2.48m)
+    O(7) -> Target 0 (move: 3.50m)
+
+============================================================
+Total movement cost: 21.05 meters
+============================================================
+
+Task: Arrange Chairs (Hungarian Algorithm)
+Actions (8):
+  1. [move_object] Move O(2) to position near O(0)
+  2. [move_object] Move O(3) to position near O(0)
+  3. [move_object] Move O(4) to position near O(0)
+  4. [move_object] Move O(8) to position near O(0)
+  5. [move_object] Move O(9) to position near O(0)
+  6. [move_object] Move O(5) to position near O(1)
+  7. [move_object] Move O(6) to position near O(1)
+  8. [move_object] Move O(7) to position near O(1)
+
+============================================================
+Task Sequence JSON:
+============================================================
+{
+  "task_name": "Arrange Chairs (Hungarian Algorithm)",
+  "actions": [
+    {
+      "action_type": "move_object",
+      "description": "Move O(2) to position near O(0)",
+      "target_object": "O(2)",
+      "target_position": {
+        "x": -3.080811023712158,
+        "y": -5.433683252334594,
+        "z": 0.7258767485618591
+      }
+    },
+    {
+      "action_type": "move_object",
+      "description": "Move O(3) to position near O(0)",
+      "target_object": "O(3)",
+      "target_position": {
+        "x": -2.414154728253682,
+        "y": -5.433683252334594,
+        "z": 0.7258767485618591
+      }
+    },
+    {
+      "action_type": "move_object",
+      "description": "Move O(4) to position near O(0)",
+      "target_object": "O(4)",
+      "target_position": {
+        "x": -3.080811023712158,
+        "y": -3.2336875438690185,
+        "z": 0.7258767485618591
+      }
+    },
+    {
+      "action_type": "move_object",
+      "description": "Move O(8) to position near O(0)",
+      "target_object": "O(8)",
+      "target_position": {
+        "x": -3.747467319170634,
+        "y": -3.2336875438690185,
+        "z": 0.7258767485618591
+      }
+    },
+    {
+      "action_type": "move_object",
+      "description": "Move O(9) to position near O(0)",
+      "target_object": "O(9)",
+      "target_position": {
+        "x": -3.747467319170634,
+        "y": -5.433683252334594,
+        "z": 0.7258767485618591
+      }
+    },
+    {
+      "action_type": "move_object",
+      "description": "Move O(5) to position near O(1)",
+      "target_object": "O(5)",
+      "target_position": {
+        "x": -2.5767346918582916,
+        "y": -0.2904802322387695,
+        "z": 0.7253891825675964
+      }
+    },
+    {
+      "action_type": "move_object",
+      "description": "Move O(6) to position near O(1)",
+      "target_object": "O(6)",
+      "target_position": {
+        "x": -3.5767191350460052,
+        "y": 1.9095154762268067,
+        "z": 0.7253891825675964
+      }
+    },
+    {
+      "action_type": "move_object",
+      "description": "Move O(7) to position near O(1)",
+      "target_object": "O(7)",
+      "target_position": {
+        "x": -3.5767191350460052,
+        "y": -0.2904802322387695,
+        "z": 0.7253891825675964
+      }
+    }
+  ],
+  "metadata": {
+    "description": "Move chairs to optimal positions around tables",
+    "algorithm": "Hungarian",
+    "offset": 0.6,
+    "distribution": "long_sides",
+    "total_cost": 21.04917219097249
+  }
+}

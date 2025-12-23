@@ -1,15 +1,15 @@
 #Big file
 source/assets/
+phy_plan/test/
 # C++
 **/cmake-build*/
 **/build*/
 **/*.so
 **/*.log*
-
+phy_plan/test/
 # Omniverse
 **/*.dmp
 **/.thumbs
-
 # No USD files allowed in the repo
 **/*.usd
 **/*.usda

@@ -4,6 +4,10 @@
 #include <vector>
 #include <unordered_set>
 #include <unordered_map>
+#include <cstdio>
+#include <stdexcept>
+#include <filesystem>
+#include <nlohmann/json.hpp>
 
 // PCL for point cloud manipulation
 #include <pcl_conversions/pcl_conversions.h>
@@ -132,19 +136,45 @@ void PhysicalInferenceNode::callInferenceService(const hydra::SceneGraphNode& ob
         // 1. High Quality (Score > 80): Immediate inference
         // 2. Medium Quality (40 < Score < 80) & New Object (< 10s): Wait for better view
         // 3. Low Quality / Old Object: Force inference (Best Effort)
+        // 4. 延迟上限与抑制：超过次数后暂时跳过，直到有新的观测时间戳
+        
+        // 延迟/抑制状态
+        auto& defer = defer_state_[object_node.id];
+        const int MAX_DEFER = 5;
+        const double REOBSERVE_RESET_SEC = 1.0;
+
+        if (defer.suppressed) {
+            if (attrs.last_update_time_ns > defer.last_update_ns &&
+                (attrs.last_update_time_ns - defer.last_update_ns) * 1e-9 > REOBSERVE_RESET_SEC) {
+                defer.suppressed = false;
+                defer.count = 0;
+            } else {
+                ROS_DEBUG("Suppressed inference for %s, waiting for new observation.", attrs.name.c_str());
+                return;
+            }
+        }
         
         // Use last_update_time_ns as creation time proxy for now
         ros::Time creation_time;
         creation_time.fromNSec(attrs.last_update_time_ns);
-        double age_seconds = (ros::Time::now() - creation_time).toSec();
+        double age_seconds = std::max(0.0, (ros::Time::now() - creation_time).toSec());
         
         const double HIGH_QUALITY_THRESHOLD = 70.0;
         const double WAIT_TIMEOUT_SECONDS = 5.0;
 
         if (score < HIGH_QUALITY_THRESHOLD) {
             if (age_seconds < WAIT_TIMEOUT_SECONDS) {
-                ROS_INFO("Deferring inference for %s (Score: %.1f, Age: %.1fs). Waiting for better view...", 
-                         attrs.name.c_str(), score, age_seconds);
+                defer.count++;
+                defer.last_update_ns = attrs.last_update_time_ns;
+                defer.last_try_time = ros::Time::now();
+                if (defer.count >= MAX_DEFER) {
+                    defer.suppressed = true;
+                    ROS_INFO("Deferring inference for %s reached limit (%d). Suppressing until new observation.",
+                             attrs.name.c_str(), defer.count);
+                } else {
+                    ROS_INFO("Deferring inference for %s (Score: %.1f, Age: %.1fs, Count: %d). Waiting for better view...", 
+                             attrs.name.c_str(), score, age_seconds, defer.count);
+                }
                 return; // SKIP without marking as processed
             } else {
                 ROS_WARN("Timeout reached for %s (Score: %.1f, Age: %.1fs). Forcing inference with suboptimal view.", 
@@ -174,6 +204,7 @@ void PhysicalInferenceNode::callInferenceService(const hydra::SceneGraphNode& ob
                 processing_time_ms
             );
             processed_object_ids_.insert(object_node.id);
+            defer_state_.erase(object_node.id); // 清理延迟状态
             ROS_INFO("✓ VLM Success for %s (%.0f ms)", attrs.name.c_str(), processing_time_ms);
         } else {
             ROS_ERROR("VLM service failed or returned empty response for %s", attrs.name.c_str());
@@ -201,15 +232,49 @@ void PhysicalInferenceNode::setupOutputDirectory() {
         auto t = std::time(nullptr);
         auto tm = *std::localtime(&t);
         std::ostringstream oss;
-        oss << std::put_time(&tm, "%m-%d_%H-%M");
+        // Include year and seconds to avoid collisions across years/runs and make sorting stable
+        oss << std::put_time(&tm, "%Y-%m-%d_%H-%M-%S");
         output_dir_ = pkg_path + "/output/" + oss.str();
-        boost::filesystem::create_directories(output_dir_);
+        std::error_code ec;
+        std::filesystem::create_directories(output_dir_, ec);
+        if (ec) {
+            throw std::runtime_error("Failed to create output directory: " + output_dir_);
+        }
         ROS_INFO("Output directory created: %s", output_dir_.c_str());
     } catch (std::exception& e) {
         output_dir_ = "/tmp/phy_graph_output";
-        boost::filesystem::create_directories(output_dir_);
+        std::error_code ec;
+        std::filesystem::create_directories(output_dir_, ec);
     }
 }
+
+namespace {
+inline void atomicWriteTextFile(const std::string& final_path, const std::string& contents) {
+    const std::string tmp_path = final_path + ".tmp";
+    {
+        std::ofstream out(tmp_path, std::ios::out | std::ios::trunc);
+        if (!out.is_open()) {
+            throw std::runtime_error("Failed to open tmp file: " + tmp_path);
+        }
+        out << contents;
+        out.flush();
+        if (!out.good()) {
+            throw std::runtime_error("Failed to write tmp file: " + tmp_path);
+        }
+    }
+
+    // std::filesystem::rename does not overwrite, so remove first (best-effort)
+    std::error_code ec;
+    std::filesystem::remove(final_path, ec);
+    ec.clear();
+    std::filesystem::rename(tmp_path, final_path, ec);
+    if (ec) {
+        // Fallback to std::rename (best effort)
+        std::remove(final_path.c_str());
+        std::rename(tmp_path.c_str(), final_path.c_str());
+    }
+}
+}  // namespace
 
 void PhysicalInferenceNode::saveInferenceResult(
     const hydra::NodeId& node_id, const std::string& label,
@@ -222,20 +287,16 @@ void PhysicalInferenceNode::saveInferenceResult(
         std::ostringstream filename_ss;
         filename_ss << "object_" << node_id_str << "_" << label << ".json";
         std::string filepath = output_dir_ + "/" + filename_ss.str();
-        
-        std::ofstream outfile(filepath);
-        if (outfile.is_open()) {
-            outfile << "{\n"
-                    << "  \"object_id\": \"" << node_id_str << "\",\n"
-                    << "  \"label\": \"" << label << "\",\n"
-                    << "  \"description\": \"" << description << "\",\n"
-                    << "  \"friction_level\": " << friction_level << ",\n"
-                    << "  \"pushable\": " << (pushable ? "true" : "false") << ",\n"
-                    << "  \"weight_level\": " << weight_level << ",\n"
-                    << "  \"processing_time_ms\": " << static_cast<int>(processing_time_ms) << "\n"
-                    << "}\n";
-            outfile.close();
-        }
+
+        nlohmann::json j;
+        j["object_id"] = node_id_str;
+        j["label"] = label;
+        j["description"] = description;
+        j["friction_level"] = friction_level;
+        j["pushable"] = pushable;
+        j["weight_level"] = weight_level;
+        j["processing_time_ms"] = static_cast<int>(processing_time_ms);
+        atomicWriteTextFile(filepath, j.dump(2) + "\n");
     } catch (...) {}
 }
 

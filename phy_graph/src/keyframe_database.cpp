@@ -1,6 +1,6 @@
 #include "phy_graph/keyframe_database.h"
 #include <ros/console.h>
-#include <boost/filesystem.hpp>
+#include <filesystem>
 #include <iomanip>
 
 namespace phy_graph {
@@ -34,7 +34,8 @@ KeyframeDatabase::KeyframeDatabase(const std::string& storage_dir,
     // Ensure storage directory exists
     try {
         if (!storage_dir_.empty()) {
-            boost::filesystem::create_directories(storage_dir_);
+            std::error_code ec;
+            std::filesystem::create_directories(storage_dir_, ec);
         }
     } catch (std::exception& e) {
         ROS_ERROR("KeyframeDatabase: Failed to create dir %s: %s", storage_dir_.c_str(), e.what());

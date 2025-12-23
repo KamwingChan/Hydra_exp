@@ -1,0 +1,43 @@
+room_rules:
+  Bedroom:
+    bed: 10
+    wardrobe: 5
+    nightstand: 3
+    pillow: 2
+  Bathroom:
+    toilet: 10
+    shower: 8
+    bathtub: 8
+    sink: 3
+    towel: 2
+  Kitchen:
+    stove: 10
+    oven: 10
+    refrigerator: 8
+    microwave: 5
+    sink: 3
+    cabinet: 2
+  LivingRoom:
+    couch: 8
+    tv: 5
+    coffee_table: 3
+    lamp: 2
+  Office:
+    monitor: 5
+    keyboard: 3
+    desk: 5
+    office_chair: 5
+    book: 2
+  DiningRoom:
+    dining_table: 8
+    chair: 3
+    plate: 2
+
+room_synonyms:
+  sofa: couch
+  television: tv
+  coffee table: coffee_table
+  dining table: dining_table
+
+room_stability_timeout: 1.5
+

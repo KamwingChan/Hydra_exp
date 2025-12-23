@@ -18,19 +18,21 @@ class CameraMover:
 
     Args:
         cam (VisionSensor): The camera vision sensor to manipulate via the keyboard
-        delta (float): Change (m) per keypress when moving the camera
+        delta (float): Base linear speed in m/s when moving the camera
         save_dir (str): Absolute path to where recorded images should be stored. Default is <OMNIGIBSON_PATH>/imgs
     """
 
-    def __init__(self, cam, delta=0.25, save_dir=None):
+    def __init__(self, cam, delta=0.8, save_dir=None):
         if save_dir is None:
             save_dir = f"{og.root_path}/../images"
 
         self.cam = cam
+        # 将 delta 视作连续移动的速度（m/s），方便后续按帧更新
         self.delta = delta
         self.fast_delta = delta * 3.0  # Shift加速
         self.slow_delta = delta * 0.2  # Ctrl减速
-        self.rot_speed = 0.02  # 旋转速度
+        # 原始 0.02 rad/keypress （约30Hz）≈0.6 rad/s，这里直接使用角速度
+        self.rot_speed = 0.6  # 旋转速度 (rad/s)
         self.light_val = gm.FORCE_LIGHT_INTENSITY
         self.save_dir = save_dir
         
@@ -258,10 +260,10 @@ class CameraMover:
 
     def set_delta(self, delta):
         """
-        Sets the delta value (how much the camera moves with each keypress) for this CameraMover
+        Sets the base linear speed (m/s) for this CameraMover
 
         Args:
-            delta (float): Change (m) per keypress when moving the camera
+            delta (float): Base linear speed in m/s when moving the camera
         """
         self.delta = delta
 
@@ -302,16 +304,15 @@ class CameraMover:
     def input_to_command(self):
         """
         Returns:
-            dict: Mapping from relevant keypresses to corresponding delta command to apply to the camera pose
+            dict: Mapping from relevant keypresses to corresponding direction vectors in camera frame
         """
-        delta = self.get_current_delta()
         return {
-            lazy.carb.input.KeyboardInput.D: th.tensor([delta, 0, 0]),
-            lazy.carb.input.KeyboardInput.A: th.tensor([-delta, 0, 0]),
-            lazy.carb.input.KeyboardInput.W: th.tensor([0, 0, -delta]),
-            lazy.carb.input.KeyboardInput.S: th.tensor([0, 0, delta]),
-            lazy.carb.input.KeyboardInput.Q: th.tensor([0, delta, 0]),
-            lazy.carb.input.KeyboardInput.E: th.tensor([0, -delta, 0]),
+            lazy.carb.input.KeyboardInput.D: th.tensor([1.0, 0.0, 0.0]),
+            lazy.carb.input.KeyboardInput.A: th.tensor([-1.0, 0.0, 0.0]),
+            lazy.carb.input.KeyboardInput.W: th.tensor([0.0, 0.0, -1.0]),
+            lazy.carb.input.KeyboardInput.S: th.tensor([0.0, 0.0, 1.0]),
+            lazy.carb.input.KeyboardInput.Q: th.tensor([0.0, 1.0, 0.0]),
+            lazy.carb.input.KeyboardInput.E: th.tensor([0.0, -1.0, 0.0]),
         }
     
     @property
@@ -321,11 +322,86 @@ class CameraMover:
             dict: Mapping from arrow keys to rotation axis and direction
         """
         return {
-            lazy.carb.input.KeyboardInput.UP: ('pitch', self.rot_speed),
-            lazy.carb.input.KeyboardInput.DOWN: ('pitch', -self.rot_speed),
-            lazy.carb.input.KeyboardInput.LEFT: ('yaw', self.rot_speed),
-            lazy.carb.input.KeyboardInput.RIGHT: ('yaw', -self.rot_speed),
+            lazy.carb.input.KeyboardInput.UP: ('pitch', -1.0),
+            lazy.carb.input.KeyboardInput.DOWN: ('pitch', 1.0),
+            lazy.carb.input.KeyboardInput.LEFT: ('yaw', 1.0),
+            lazy.carb.input.KeyboardInput.RIGHT: ('yaw', -1.0),
         }
+
+    def _movement_direction(self):
+        """
+        Returns normalized movement direction in camera frame if any keys are active.
+        """
+        direction = th.zeros(3)
+        for key, vec in self.input_to_command.items():
+            if self.key_state.get(key, False):
+                direction += vec
+        norm = th.norm(direction)
+        if norm.item() == 0:
+            return None
+        return direction / norm
+
+    def _rotation_delta(self, dt):
+        """
+        Returns (pitch_delta, yaw_delta) in radians for this frame.
+        """
+        pitch = 0.0
+        yaw = 0.0
+        for key, (axis, direction) in self.input_to_rotation.items():
+            if not self.key_state.get(key, False):
+                continue
+            if axis == 'pitch':
+                pitch += direction * self.rot_speed * dt
+            elif axis == 'yaw':
+                yaw += direction * self.rot_speed * dt
+        if abs(pitch) < 1e-6 and abs(yaw) < 1e-6:
+            return None
+        return pitch, yaw
+
+    def update(self, dt):
+        """
+        Continuous update for smooth camera motion. Should be called every frame with elapsed time (seconds).
+        """
+        if dt is None or dt <= 0 or self.cam is None:
+            return
+
+        direction = self._movement_direction()
+        rotation = self._rotation_delta(dt)
+        if direction is None and rotation is None:
+            return
+
+        pos, orn = self.cam.get_position_orientation()
+        pos = pos if isinstance(pos, th.Tensor) else th.tensor(pos, dtype=th.float32)
+        orn = orn if isinstance(orn, th.Tensor) else th.tensor(orn, dtype=th.float32)
+
+        updated = False
+
+        if direction is not None:
+            speed = self.get_current_delta()
+            if speed > 0:
+                delta_local = direction * speed * dt
+                transform = T.quat2mat(orn)
+                delta_global = transform @ delta_local
+                pos = pos + delta_global
+                updated = True
+
+        if rotation is not None:
+            pitch_delta, yaw_delta = rotation
+            if pitch_delta or yaw_delta:
+                orn_tensor = orn if isinstance(orn, th.Tensor) else th.tensor(orn, dtype=th.float32)
+                orn_xyzw = th.stack([orn_tensor[1], orn_tensor[2], orn_tensor[3], orn_tensor[0]])
+                euler = R.from_quat(orn_xyzw.detach().cpu().numpy()).as_euler('xyz')
+                euler[2] += pitch_delta
+                euler[0] += yaw_delta
+                new_quat_xyzw = R.from_euler('xyz', euler).as_quat()
+                orn = th.tensor(
+                    [new_quat_xyzw[3], new_quat_xyzw[0], new_quat_xyzw[1], new_quat_xyzw[2]],
+                    dtype=orn.dtype,
+                )
+                updated = True
+
+        if updated:
+            self.cam.set_position_orientation(position=pos, orientation=orn)
 
     def _sub_keyboard_event(self, event, *args, **kwargs):
         """
@@ -334,51 +410,14 @@ class CameraMover:
         Args:
             event (int): keyboard event type
         """
-        # 更新键盘状态（用于 Shift/Ctrl 检测）
+        # 更新键盘状态（用于 Shift/Ctrl 与连续移动检测）
         if event.type == lazy.carb.input.KeyboardEventType.KEY_PRESS:
             self.key_state[event.input] = True
+            if event.input in self.input_to_function:
+                self.input_to_function[event.input]()
         elif event.type == lazy.carb.input.KeyboardEventType.KEY_RELEASE:
             self.key_state[event.input] = False
-            return True
-        
-        if (
-            event.type == lazy.carb.input.KeyboardEventType.KEY_PRESS
-            or event.type == lazy.carb.input.KeyboardEventType.KEY_REPEAT
-        ):
-            # 处理功能键（单次触发）
-            if event.type == lazy.carb.input.KeyboardEventType.KEY_PRESS and event.input in self.input_to_function:
-                self.input_to_function[event.input]()
-
-            # 处理移动键
-            elif event.input in self.input_to_command:
-                command = self.input_to_command[event.input]
-                # Convert to world frame to move the camera
-                pos, orn = self.cam.get_position_orientation()
-                transform = T.quat2mat(orn)
-                delta_pos_global = transform @ command
-                self.cam.set_position_orientation(position=pos + delta_pos_global)
-            
-            # 处理旋转键（方向键）
-            elif event.input in self.input_to_rotation:
-                axis, angle = self.input_to_rotation[event.input]
-                pos, orn = self.cam.get_position_orientation()
-                
-                # 将四元数转换为欧拉角 (omnigibson用wxyz格式)
-                orn_xyzw = th.tensor([orn[1], orn[2], orn[3], orn[0]])
-                euler = R.from_quat(orn_xyzw.numpy()).as_euler('xyz')
-                
-                # 应用旋转
-                if axis == 'pitch':
-                    euler[0] += angle  # 俯仰
-                elif axis == 'yaw':
-                    euler[2] += angle  # 偏航
-                
-                # 转换回四元数
-                new_quat_xyzw = R.from_euler('xyz', euler).as_quat()
-                # 转换为wxyz格式
-                new_orn = th.tensor([new_quat_xyzw[3], new_quat_xyzw[0], new_quat_xyzw[1], new_quat_xyzw[2]])
-                
-                self.cam.set_position_orientation(position=pos, orientation=new_orn)
-
+        elif event.type == lazy.carb.input.KeyboardEventType.KEY_REPEAT:
+            self.key_state[event.input] = True
         return True
 

@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_set>
+#include <unordered_map>
 #include <deque>
 
 #include <kimera_pgmo_msgs/KimeraPgmoMesh.h>
@@ -141,6 +142,15 @@ private:
     
     // debug members
     bool debug_save_images_;  
+
+    // 延迟/抑制状态
+    struct DeferState {
+        int count = 0;
+        bool suppressed = false;
+        uint64_t last_update_ns = 0;
+        ros::Time last_try_time = ros::Time(0);
+    };
+    std::unordered_map<uint64_t, DeferState> defer_state_;
 
     // 专用回调队列
     ros::CallbackQueue rgb_queue_;
