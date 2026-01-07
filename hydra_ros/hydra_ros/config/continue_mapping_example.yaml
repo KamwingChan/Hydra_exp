@@ -1,0 +1,17 @@
+# Continue Mapping Configuration Example
+# This file shows how to enable continue mapping in Hydra
+
+# Continue mapping settings (flat parameters)
+# Enable continue mapping mode
+continue_mapping: false  # Set to true to enable
+
+# Path to previously saved map directory
+# Should contain: backend/dsg.json and backend/mesh.ply
+map_load_path: ""  # e.g., "/path/to/saved/map"
+
+# Example usage in launch file:
+# <rosparam command="load" file="$(find hydra_ros)/config/continue_mapping_example.yaml" />
+# Or directly set params:
+# <param name="continue_mapping" value="true" />
+# <param name="map_load_path" value="/path/to/your/saved/map" />
+

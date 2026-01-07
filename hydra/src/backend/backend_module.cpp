@@ -527,6 +527,29 @@ void BackendModule::copyMeshDelta(const BackendInput& input) {
   }
 
   input.mesh_update->updateMesh(*private_dsg_->graph->mesh());
+  // TODO(kamwing): clean up invalid faces in the mesh
+  // if (is_continue_mapping) {
+  //   auto& mesh_faces = private_dsg_->graph->mesh()->faces;
+  //   const size_t num_vertices = private_dsg_->graph->mesh()->points.size();
+  //   const size_t original_face_count = mesh_faces.size();
+    
+  //   mesh_faces.erase(
+  //     std::remove_if(mesh_faces.begin(), mesh_faces.end(),
+  //       [num_vertices](const auto& face) {
+  //         return face[0] >= num_vertices || 
+  //                face[1] >= num_vertices || 
+  //                face[2] >= num_vertices;
+  //       }),
+  //     mesh_faces.end()
+  //   );
+    
+  //   if (mesh_faces.size() < original_face_count) {
+  //     LOG(WARNING) << "[Backend] Cleaned " << (original_face_count - mesh_faces.size())
+  //                  << " stale faces from mesh (vertices: " << num_vertices 
+  //                  << ", remaining faces: " << mesh_faces.size() << ")";
+  //   }
+  // }
+
   kimera_pgmo::StampedCloud<pcl::PointXYZ> cloud_out{*original_vertices_,
                                                      vertex_stamps_};
   input.mesh_update->updateVertices(cloud_out);
@@ -534,12 +557,9 @@ void BackendModule::copyMeshDelta(const BackendInput& input) {
   // still active
   num_archived_vertices_ = input.mesh_update->getTotalArchivedVertices();
   
-  // In continue_mapping mode, update all nodes (including loaded/inactive ones)
-  // to keep their mesh indices up-to-date
-  const bool is_continue_mapping = 
-      GlobalInfo::instance().getConfig().continue_mapping;
+  // TODO(kamwing): Determine whether to update all places 
   utils::updatePlaces2d(private_dsg_, *input.mesh_update, num_archived_vertices_,
-                        is_continue_mapping);
+                        false);
 
   have_new_mesh_ = true;
 }

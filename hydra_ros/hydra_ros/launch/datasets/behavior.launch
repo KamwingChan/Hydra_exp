@@ -1,18 +1,16 @@
 <launch>
     <!--Basic settings-->
     <arg name="sim_time_required" default="false"/>
+    <arg name="enable_zmq_interface" default="false"/>
     <param name="use_sim_time" value="$(arg sim_time_required)"/>
     <arg name="use_gt_frame" default="true" doc="use simulator-provided tf frame"/>
-    <arg name="use_gt_semantics" default="false" doc="use simulator-provider semantics"/>
+    <arg name="use_gt_semantics" default="true" doc="use simulator-provider semantics"/>
     <arg name="color_mesh_by_label" default="false" doc="display mesh colored by semantic label"/>
-    <arg name="use_single_channel_label_image" default="false"/>
-    <arg name="sensor_min_range" default="0.1" doc="minimum sensor range in meters"/>
-    <arg name="sensor_max_range" default="5" doc="maximum sensor range in meters"/>
     <arg name="robot_frame" default="camera_link" doc="robot body tf frame"/>
     <!--arg name="robot_frame" default="base_link" doc="robot body tf frame"/-->
     <arg name="odom_frame" default="world" doc="odometry (map) frame"/>
     <arg name="sensor_frame" default="camera_link" doc="camera frame"/>
-    <arg name="hydra_config_path" default="$(find hydra)/config/datasets/isaacsim.yaml"/>
+    <arg name="hydra_config_path" default="$(find hydra)/config/datasets/behavior.yaml"/>
     <arg name="continue_mapping" default="false" doc="Set to true to load a pre-existing map and continue mapping."/>
     <arg name="map_load_path" default="/home/kamwing/catkin_ws/src/hydra/output/isaacsim/2025-10-14_14-53" doc="Path to the root of the saved hydra map folder"/>
     <!--base_link -> camera_link (camera mounting position) -->
@@ -24,7 +22,7 @@
           
     <!-- camera_link -> camera_color_optical_frame (camera optical frame) -->
     <node pkg="tf2_ros" type="static_transform_publisher" name="camera_link_to_color_optical" 
-          args="0 0 0 0 0 0 camera_link camera_color_optical_frame" />
+          args="0 0 0 0 0 0 camera_link camera_optical_frame" />
     
     <!-- lcd config -->
     <arg name="use_gnn_descriptors" default="false"/>
@@ -32,17 +30,17 @@
     <arg name="lcd_config_path" default="$(find hydra)/config/lcd/$(arg lcd_config_name)"/>
     
     <!-- semantics -->
-    <arg name="labelspace_name" default="$(eval 'yanglaoyuan' if use_gt_semantics else 'ade20k_full')" doc="semantic label space"/>
+    <arg name="labelspace_name" default="$(eval 'behavior' if use_gt_semantics else 'ade20k_full')" doc="semantic label space"/>
     <!--TODO: Editing the prim -->
-    <arg name="semantic_map_path" default="$(find hydra_ros)/config/color/yanglaoyuan.csv" if="$(arg use_gt_semantics)"/>
+    <arg name="semantic_map_path" default="$(find hydra_ros)/config/color/behavior.csv" if="$(arg use_gt_semantics)"/>
     <arg name="use_prerecorded_semantics" default="false" doc="Use precorded labels as input"/>
     <arg name="prerecorded_topic" default="/oneformer/labels/image_raw" doc="Topic containing prerecorded labels"/>
     
 
     
-    <!-- isaacsim camera topics -->
-    <arg name="rgb_topic" default="/camera/rgb/image_raw"/>
-    <arg name="rgb_info_topic" default="/camera/rgb/camera_info"/>
+    <!-- behavior camera topics -->
+    <arg name="rgb_topic" default="/camera/color/image_raw"/>
+    <arg name="rgb_info_topic" default="/camera/camera_info"/>
     <arg name="depth_topic" default="/camera/depth/image_raw"/>
     <arg name="label_topic" default="$(eval '/camera/semantic/image_raw' if use_gt_semantics else 'semantic_inference/semantic/image_raw')"/>
     
@@ -72,7 +70,7 @@
     
     <!-- rviz configure -->
     <include file="$(find hydra_ros)/launch/hydra.launch" pass_all_args="true">
-        <arg name="dataset_name" default="isaacsim"/>
-        <arg name="rviz_path" default="$(find hydra_ros)/rviz/isaacsim.rviz"/>
+        <arg name="dataset_name" default="behavior"/>
+        <arg name="rviz_path" default="$(find hydra_ros)/rviz/behavior.rviz"/>
     </include>
 </launch>

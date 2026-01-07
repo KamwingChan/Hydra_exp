@@ -34,6 +34,7 @@
  * -------------------------------------------------------------------------- */
 #include "hydra/utils/mesh_utilities.h"
 
+#include <glog/logging.h>
 #include <pcl/point_types.h>
 #define PCL_NO_PRECOMPILE
 #include <pcl/filters/radius_outlier_removal.h>
@@ -45,9 +46,17 @@ namespace hydra {
 bool updateNodeCentroid(const spark_dsg::Mesh& mesh,
                         const std::vector<size_t>& indices,
                         NodeAttributes& attrs) {
+  const size_t mesh_size = mesh.numVertices();
   size_t num_valid = 0;
+  size_t num_skipped = 0;
   Eigen::Vector3d centroid = Eigen::Vector3d::Zero();
   for (const auto idx : indices) {
+    // Add boundary check to prevent out-of-range access
+    if (idx >= mesh_size) {
+      ++num_skipped;
+      continue;
+    }
+
     const auto pos = mesh.pos(idx).cast<double>();
     if (!pos.array().isFinite().all()) {
       continue;
@@ -55,6 +64,11 @@ bool updateNodeCentroid(const spark_dsg::Mesh& mesh,
 
     centroid += pos;
     ++num_valid;
+  }
+
+  if (num_skipped > 0) {
+    VLOG(2) << "[updateNodeCentroid] Skipped " << num_skipped 
+            << " out-of-bounds indices (mesh size: " << mesh_size << ")";
   }
 
   if (!num_valid) {
@@ -69,19 +83,56 @@ bool updateObjectGeometry(const spark_dsg::Mesh& mesh,
                           ObjectNodeAttributes& attrs,
                           const std::vector<size_t>* indices,
                           std::optional<BoundingBox::Type> type) {
-  std::vector<size_t> mesh_connections;
+  const size_t mesh_size = mesh.numVertices();
+  
+  // Create a local copy of indices and filter out invalid ones
+  std::vector<size_t> valid_indices;
+  const std::vector<size_t>* source_indices = indices;
+  
   if (!indices) {
-    mesh_connections.assign(attrs.mesh_connections.begin(),
-                            attrs.mesh_connections.end());
+    // Use mesh_connections from attrs
+    valid_indices.reserve(attrs.mesh_connections.size());
+    size_t num_invalid = 0;
+    for (const auto& idx : attrs.mesh_connections) {
+      if (idx < mesh_size) {
+        valid_indices.push_back(idx);
+      } else {
+        ++num_invalid;
+      }
+    }
+    if (num_invalid > 0) {
+      VLOG(2) << "[updateObjectGeometry] Filtered out " << num_invalid 
+              << " out-of-bounds indices from mesh_connections (mesh size: " << mesh_size << ")";
+    }
+    source_indices = &valid_indices;
+  } else {
+    // Filter provided indices
+    valid_indices.reserve(indices->size());
+    size_t num_invalid = 0;
+    for (const auto& idx : *indices) {
+      if (idx < mesh_size) {
+        valid_indices.push_back(idx);
+      } else {
+        ++num_invalid;
+      }
+    }
+    if (num_invalid > 0) {
+      VLOG(2) << "[updateObjectGeometry] Filtered out " << num_invalid 
+              << " out-of-bounds indices from provided indices (mesh size: " << mesh_size << ")";
+    }
+    source_indices = &valid_indices;
   }
 
-  const BoundingBox::MeshAdaptor adaptor(mesh, indices ? indices : &mesh_connections);
-  attrs.bounding_box = BoundingBox(adaptor, type.value_or(attrs.bounding_box.type));
-  if (indices) {
-    return updateNodeCentroid(mesh, *indices, attrs);
-  } else {
-    return updateNodeCentroid(mesh, mesh_connections, attrs);
+  // Handle empty indices case
+  if (valid_indices.empty()) {
+    VLOG(2) << "[updateObjectGeometry] No valid indices, returning invalid bbox";
+    attrs.bounding_box = BoundingBox();
+    return false;
   }
+
+  const BoundingBox::MeshAdaptor adaptor(mesh, source_indices);
+  attrs.bounding_box = BoundingBox(adaptor, type.value_or(attrs.bounding_box.type));
+  return updateNodeCentroid(mesh, valid_indices, attrs);
 }
 
 MeshLayer::Ptr getActiveMesh(const MeshLayer& mesh_layer,

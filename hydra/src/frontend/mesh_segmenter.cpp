@@ -453,14 +453,61 @@ void MeshSegmenter::initializeFromGraph(const DynamicSceneGraph& graph) {
   if (!graph.hasLayer(DsgLayers::OBJECTS)) {
     return;
   }
+  
+  // Get mesh size for validation
+  size_t mesh_size = 0;
+  if (graph.hasMesh()) {
+    mesh_size = graph.mesh()->numVertices();
+  }
+  
   NodeId max_id = 0;
   const auto& layer = graph.getLayer(DsgLayers::OBJECTS);
-  for (const auto& [id, _] : layer.nodes()) max_id = std::max(max_id, id);
+  size_t nodes_added = 0;
+  size_t nodes_with_invalid_connections = 0;
+  
+  // merge active object nodes into active_nodes_ for subsequent updates and matching
+  // so updateOldNodes() can check if these nodes need to be updated or deleted
+  for (const auto& [id, node] : layer.nodes()) {
+    max_id = std::max(max_id, id);
+    const auto& attrs = node->attributes<ObjectNodeAttributes>();
+    
+    // Validate mesh_connections if mesh is available
+    if (mesh_size > 0 && !attrs.mesh_connections.empty()) {
+      size_t max_connection = 0;
+      for (const auto& idx : attrs.mesh_connections) {
+        max_connection = std::max(max_connection, idx);
+      }
+      if (max_connection >= mesh_size) {
+        LOG(WARNING) << "[MeshSeg] Node " << NodeSymbol(id).getLabel()
+                     << " has invalid mesh_connections (max index: " << max_connection
+                     << ", mesh size: " << mesh_size << "). "
+                     << "This may cause issues during updateOldNodes().";
+        ++nodes_with_invalid_connections;
+      }
+    }
+    
+    // only add nodes with is_active=true, consistent with Place2dSegmenter
+    // updateOldNodes() will check the mesh connections of these nodes and update the is_active status
+    if (attrs.is_active) {
+      active_nodes_[attrs.semantic_label].insert(id);
+      ++nodes_added;
+      VLOG(2) << "[MeshSeg] Added existing active object node " << NodeSymbol(id).getLabel()
+              << " (label: " << attrs.semantic_label 
+              << ", connections: " << attrs.mesh_connections.size() << ") to active_nodes_";
+    }
+  }
+  
+  if (nodes_with_invalid_connections > 0) {
+    LOG(ERROR) << "[MeshSeg] Found " << nodes_with_invalid_connections 
+               << " nodes with invalid mesh_connections. "
+               << "This suggests cleanupInvalidMeshIndices() was not called before init().";
+  }
+  
   if (max_id > 0) {
     const auto next_index = NodeSymbol(max_id).categoryId() + 1;
     next_node_id_ = NodeSymbol(next_node_id_.category(), next_index);
-    VLOG(1) << "[MeshSeg] Initialized next_node_id to " << NodeSymbol(next_node_id_).getLabel()
-            << " based on existing graph";
+    LOG(INFO) << "[MeshSeg] Initialized next_node_id to " << NodeSymbol(next_node_id_).getLabel()
+              << " and added " << nodes_added << " existing active object nodes to active_nodes_";
   }
 }
 

@@ -34,6 +34,9 @@
  * -------------------------------------------------------------------------- */
 #include "hydra_ros/hydra_ros_pipeline.h"
 
+#include <spark_dsg/serialization/graph_json_serialization.h>
+
+
 #include <config_utilities/config.h>
 #include <config_utilities/parsing/ros.h>
 #include <config_utilities/printing.h>
@@ -191,7 +194,80 @@ bool hydra::HydraRosPipeline::loadMap(const std::string& map_load_path) {
 
   // DSG loading
   LOG(INFO) << "[Hydra Load] Loading scene graph...";
-  backend_dsg_->graph = DynamicSceneGraph::load(dsg_path.string());
+  // 先尝试直接加载，如果失败，再对 Agent 层做重复/缺节点清洗后重试
+  try {
+    backend_dsg_->graph = DynamicSceneGraph::load(dsg_path.string());
+  } catch (const std::exception& e) {
+    LOG(WARNING) << "[Hydra Load] Failed to load raw DSG (" << e.what()
+                 << "), retrying with agent-node cleanup.";
+
+    // 读取原始 JSON
+    std::ifstream in(dsg_path);
+    if (!in) {
+      LOG(ERROR) << "[Hydra Load] Cannot open DSG file for cleanup: " << dsg_path;
+      return false;
+    }
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    nlohmann::json record = nlohmann::json::parse(buffer.str());
+
+    // 去重 Agent 节点：保留首次出现，其余丢弃
+    std::unordered_set<NodeId> kept_nodes;
+    std::vector<nlohmann::json> new_nodes;
+    for (const auto& node : record.at("nodes")) {
+      NodeId id = node.at("id").get<NodeId>();
+      const bool is_agent = (spark_dsg::LayerPrefix::fromId(id).key() == 'a');
+      if (!is_agent) {
+        new_nodes.push_back(node);
+        kept_nodes.insert(id);
+        continue;
+      }
+      if (kept_nodes.insert(id).second) {
+        new_nodes.push_back(node);
+      } else {
+        LOG(WARNING) << "[Hydra Load] Drop duplicate agent node "
+                        << spark_dsg::NodeSymbol(id).getLabel();
+      }
+    }
+    record["nodes"] = std::move(new_nodes);
+
+    // 过滤 Agent 边：若端点缺失或重复，则跳过；其他层保持原样
+    std::vector<nlohmann::json> new_edges;
+    std::set<std::pair<NodeId, NodeId>> agent_edges;
+    for (const auto& edge : record.at("edges")) {
+      NodeId s = edge.at("source").get<NodeId>();
+      NodeId t = edge.at("target").get<NodeId>();
+      const bool agent_edge = (spark_dsg::LayerPrefix::fromId(s).key() == 'a') ||
+                              (spark_dsg::LayerPrefix::fromId(t).key() == 'a');
+
+      if (agent_edge) {
+        if (!kept_nodes.count(s) || !kept_nodes.count(t)) {
+          LOG(WARNING) << "[Hydra Load] Drop agent edge with missing node: "
+                          << spark_dsg::NodeSymbol(s).getLabel() << " -> "
+                          << spark_dsg::NodeSymbol(t).getLabel();
+          continue;
+        }
+        auto key = std::make_pair(s, t);
+        if (!agent_edges.insert(key).second) {
+          LOG(WARNING) << "[Hydra Load] Drop duplicate agent edge: "
+                          << spark_dsg::NodeSymbol(s).getLabel() << " -> "
+                          << spark_dsg::NodeSymbol(t).getLabel();
+          continue;
+        }
+      }
+
+      new_edges.push_back(edge);
+    }
+    record["edges"] = std::move(new_edges);
+
+    try {
+      backend_dsg_->graph = spark_dsg::io::json::readGraph(record.dump());
+      LOG(INFO) << "[Hydra Load] Loaded DSG after agent cleanup.";
+    } catch (const std::exception& e2) {
+      LOG(ERROR) << "[Hydra Load] Agent-cleanup load failed: " << e2.what();
+      return false;
+    }
+  }
   if (!backend_dsg_->graph) {
     LOG(ERROR) << "[Hydra Load] Failed to parse scene graph file!";
     return false;
@@ -385,7 +461,14 @@ bool hydra::HydraRosPipeline::loadMap(const std::string& map_load_path) {
                  << " (will be cleaned up later)";
   }
 
-  // synchronize the loaded map to other modules
+  // Clean up any invalid mesh indices in loaded nodes BEFORE synchronization
+  // This must happen before mergeGraph() so that frontend_dsg_ gets clean data
+  // This can happen if the mesh was optimized/compressed after node creation
+  if (dsg_mesh) {
+    cleanupInvalidMeshIndices(*backend_dsg_->graph, dsg_mesh->numVertices());
+  }
+
+  // synchronize the loaded map to other modules (now with cleaned indices)
   LOG(INFO) << "[Hydra Load] Synchronizing map state to all pipeline modules...";
   frontend_dsg_->graph->mergeGraph(*backend_dsg_->graph);
   shared_state_->lcd_graph->graph->mergeGraph(*backend_dsg_->graph);
@@ -400,12 +483,6 @@ bool hydra::HydraRosPipeline::loadMap(const std::string& map_load_path) {
               << loaded_mesh->numFaces() << " faces";
   } else {
     LOG(WARNING) << "[Hydra Load] No mesh found in backend DSG, skipping mesh synchronization";
-  }
-
-  // Clean up any invalid mesh indices in loaded nodes
-  // This can happen if the mesh was optimized/compressed after node creation
-  if (dsg_mesh) {
-    cleanupInvalidMeshIndices(*backend_dsg_->graph, dsg_mesh->numVertices());
   }
 
   LOG(INFO) << "[Hydra Load] Map loading and synchronization complete!";

@@ -37,6 +37,52 @@
 
 namespace hydra::utils {
 
+// 清理 place 节点中的越界索引
+// 仅在 continue_mapping 模式下执行
+// 返回 true 如果清理后节点仍然有效,false 如果节点变空
+// bool cleanInvalidIndicesIfNeeded(Place2dNodeAttributes& attrs, 
+//                                   size_t mesh_size,
+//                                   NodeId node_id) {
+//   const bool is_continue_mapping = 
+//       GlobalInfo::instance().getConfig().continue_mapping;
+  
+//   if (!is_continue_mapping) {
+//     return true;  
+//   }
+  
+//   // 清理 pcl_mesh_connections
+//   auto iter = attrs.pcl_mesh_connections.begin();
+//   while (iter != attrs.pcl_mesh_connections.end()) {
+//     if (*iter >= mesh_size) {
+//       LOG(WARNING) << "[cleanInvalidIndices] Removing out-of-bounds index " << *iter
+//               << " from node " << node_id << " (mesh size: " << mesh_size << ")";
+//       iter = attrs.pcl_mesh_connections.erase(iter);
+//     } else {
+//       ++iter;
+//     }
+//   }
+  
+//   // 清理 pcl_boundary_connections
+//   auto b_iter = attrs.pcl_boundary_connections.begin();
+//   size_t b_idx = 0;
+//   while (b_iter != attrs.pcl_boundary_connections.end()) {
+//     if (*b_iter >= mesh_size) {
+//       LOG(WARNING) << "[cleanInvalidIndices] Removing out-of-bounds boundary index " 
+//               << *b_iter << " from node " << node_id 
+//               << " (mesh size: " << mesh_size << ")";
+//       b_iter = attrs.pcl_boundary_connections.erase(b_iter);
+//       if (b_idx < attrs.boundary.size()) {
+//         attrs.boundary.erase(attrs.boundary.begin() + b_idx);
+//       }
+//     } else {
+//       ++b_iter;
+//       ++b_idx;
+//     }
+//   }
+  
+//   return attrs.pcl_mesh_connections.size() > 0;
+// }
+
 void getPlace2dAndNeighors(const SceneGraphLayer& places_layer,
                            std::vector<std::pair<NodeId, Place2d>>& place_2ds,
                            std::map<NodeId, std::set<NodeId>>& node_neighbors) {
@@ -280,142 +326,7 @@ void addNewNodeEdges(
 void reallocateMeshPoints(const std::vector<Place2d::PointT>& points,
                           Place2dNodeAttributes& attrs1,
                           Place2dNodeAttributes& attrs2) {
-  // Check if we're in continue_mapping mode
-  const bool is_continue_mapping = 
-      GlobalInfo::instance().getConfig().continue_mapping;
-  
-  // ========== Continue Mapping Mode: Use robust version ==========
-  if (is_continue_mapping) {
-    const size_t mesh_size = points.size();
-    const size_t min_required_indices = 3;
-    
-    // Save original connections for potential rollback
-    const auto original_conns1 = attrs1.pcl_mesh_connections;
-    const auto original_conns2 = attrs2.pcl_mesh_connections;
-    
-    // Step 1: Pre-clean invalid indices
-    auto& conns1 = attrs1.pcl_mesh_connections;
-    auto& conns2 = attrs2.pcl_mesh_connections;
-    
-    conns1.erase(
-      std::remove_if(conns1.begin(), conns1.end(),
-        [mesh_size](size_t idx) { return idx >= mesh_size; }),
-      conns1.end()
-    );
-    
-    conns2.erase(
-      std::remove_if(conns2.begin(), conns2.end(),
-        [mesh_size](size_t idx) { return idx >= mesh_size; }),
-      conns2.end()
-    );
-    
-    // Step 2: Validate sufficient valid indices
-    if (conns1.size() < min_required_indices || 
-        conns2.size() < min_required_indices) {
-      VLOG(3) << "[reallocateMeshPoints] Not enough valid indices after cleaning. "
-              << "attrs1: " << conns1.size() 
-              << ", attrs2: " << conns2.size();
-      conns1 = original_conns1;
-      conns2 = original_conns2;
-      return;
-    }
-    
-    // Step 3: Check for geometric degeneracy
-    Eigen::Vector2d delta = attrs2.position.head(2) - attrs1.position.head(2);
-    const double delta_norm = delta.norm();
-    
-    if (delta_norm < 1e-6) {
-      VLOG(3) << "[reallocateMeshPoints] Nodes too close together (distance: " 
-              << delta_norm << "). Cannot define splitting plane.";
-      conns1 = original_conns1;
-      conns2 = original_conns2;
-      return;
-    }
-    
-    // Step 4: Geometric splitting
-    Eigen::Vector2d d = attrs1.position.head(2) + delta / 2;
-    
-    std::vector<Place2d::Index> p1_new_indices;
-    std::vector<Place2d::Index> p2_new_indices;
-    p1_new_indices.reserve(conns1.size());
-    p2_new_indices.reserve(conns2.size());
-    
-    for (auto midx : conns1) {
-      Eigen::Vector2d p = points.at(midx).head(2).cast<double>();
-      if ((p - d).dot(delta) > 0) {
-        p2_new_indices.push_back(midx);
-      } else {
-        p1_new_indices.push_back(midx);
-      }
-    }
-    
-    for (auto midx : conns2) {
-      Eigen::Vector2d p = points.at(midx).head(2).cast<double>();
-      if ((p - d).dot(delta) > 0) {
-        p2_new_indices.push_back(midx);
-      } else {
-        p1_new_indices.push_back(midx);
-      }
-    }
-    
-    // Step 5: Validate split result
-    if (p1_new_indices.empty() || p2_new_indices.empty()) {
-      VLOG(3) << "[reallocateMeshPoints] Geometric split resulted in empty place. "
-              << "p1: " << p1_new_indices.size() 
-              << ", p2: " << p2_new_indices.size();
-      conns1 = original_conns1;
-      conns2 = original_conns2;
-      return;
-    }
-    
-    // Step 6: Deduplication
-    std::sort(p1_new_indices.begin(), p1_new_indices.end());
-    auto last1 = std::unique(p1_new_indices.begin(), p1_new_indices.end());
-    p1_new_indices.erase(last1, p1_new_indices.end());
-    
-    std::sort(p2_new_indices.begin(), p2_new_indices.end());
-    auto last2 = std::unique(p2_new_indices.begin(), p2_new_indices.end());
-    p2_new_indices.erase(last2, p2_new_indices.end());
-    
-    // Step 7: Re-validate after deduplication
-    if (p1_new_indices.size() < min_required_indices || 
-        p2_new_indices.size() < min_required_indices) {
-      VLOG(3) << "[reallocateMeshPoints] Not enough indices after deduplication. "
-              << "p1: " << p1_new_indices.size() 
-              << ", p2: " << p2_new_indices.size();
-      conns1 = original_conns1;
-      conns2 = original_conns2;
-      return;
-    }
-    
-    // Step 8: Safe update
-    attrs1.pcl_mesh_connections = std::move(p1_new_indices);
-    attrs2.pcl_mesh_connections = std::move(p2_new_indices);
-    
-    attrs1.has_active_mesh_indices =
-        attrs1.has_active_mesh_indices || attrs2.has_active_mesh_indices;
-    attrs2.has_active_mesh_indices =
-        attrs1.has_active_mesh_indices || attrs2.has_active_mesh_indices;
-    
-    // Update min/max indices
-    if (!attrs1.pcl_mesh_connections.empty()) {
-      attrs1.pcl_min_index = *std::min_element(attrs1.pcl_mesh_connections.begin(),
-                                               attrs1.pcl_mesh_connections.end());
-      attrs1.pcl_max_index = *std::max_element(attrs1.pcl_mesh_connections.begin(),
-                                               attrs1.pcl_mesh_connections.end());
-    }
-    
-    if (!attrs2.pcl_mesh_connections.empty()) {
-      attrs2.pcl_min_index = *std::min_element(attrs2.pcl_mesh_connections.begin(),
-                                               attrs2.pcl_mesh_connections.end());
-      attrs2.pcl_max_index = *std::max_element(attrs2.pcl_mesh_connections.begin(),
-                                               attrs2.pcl_mesh_connections.end());
-    }
-    
-    return;  // Continue mapping branch complete
-  }
-  
-  // ========== Normal Mapping Mode: Keep original logic (fast path) ==========
+
   Eigen::Vector2d delta = attrs2.position.head(2) - attrs1.position.head(2);
   Eigen::Vector2d d = attrs1.position.head(2) + delta / 2;
 

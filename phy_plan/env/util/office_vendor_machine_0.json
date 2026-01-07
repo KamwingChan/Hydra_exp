@@ -634,6 +634,33 @@
                     },
                     "non_kin": {}
                 },
+                "coffee_cup_ckkwmj_0": {
+                    "is_asleep": false,
+                    "root_link": {
+                        "pos": [
+                            -4.3783,
+                            7.977,
+                            0.78391
+                        ],
+                        "ori": [
+                            -2.2202730178833008e-06,
+                            2.645188942551613e-06,
+                            0.7071071267127991,
+                            0.7071066498756409
+                        ],
+                        "lin_vel": [
+                            0.008030659519135952,
+                            -0.00071775569813326,
+                            -0.002301266649737954
+                        ],
+                        "ang_vel": [
+                            -0.0007598521187901497,
+                            0.010949792340397835,
+                            0.002736112102866173
+                        ]
+                    },
+                    "non_kin": {}
+                },
                 "eames_chair_mmqvnh_0": {
                     "is_asleep": false,
                     "root_link": {
@@ -796,33 +823,6 @@
                     },
                     "non_kin": {}
                 },
-                "eames_chair_svlwdg_1": {
-                    "is_asleep": false,
-                    "root_link": {
-                        "pos": [
-                            0.27511265873908997,
-                            -7.007208347320557,
-                            0.39474204182624817
-                        ],
-                        "ori": [
-                            -7.748603820800781e-07,
-                            1.227774191647768e-06,
-                            -0.3106241524219513,
-                            0.950532853603363
-                        ],
-                        "lin_vel": [
-                            0.0012704131659120321,
-                            0.0008656673016957939,
-                            -0.0005389816360548139
-                        ],
-                        "ang_vel": [
-                            -0.00199237116612494,
-                            0.003093985840678215,
-                            0.0001837212621467188
-                        ]
-                    },
-                    "non_kin": {}
-                },
                 "eames_chair_svlwdg_2": {
                     "is_asleep": false,
                     "root_link": {
@@ -908,7 +908,7 @@
                     "is_asleep": false,
                     "root_link": {
                         "pos": [
-                            -0.00307,
+                            1.21261,
                             -2.50359,
                             0.4933064877986908
                         ],
@@ -936,7 +936,7 @@
                     "root_link": {
                         "pos": [
                             -0.35466,
-                            -3.719740152359009,
+                            -4.7361,
                             0.4933018386363983
                         ],
                         "ori": [
@@ -5453,17 +5453,17 @@
                     "bddl_object_scope": null
                 }
             },
-            "eames_chair_mmqvnh_0": {
+            "coffee_cup_ckkwmj_0": {
                 "class_module": "omnigibson.objects.dataset_object",
                 "class_name": "DatasetObject",
                 "args": {
-                    "name": "eames_chair_mmqvnh_0",
-                    "category": "eames_chair",
-                    "model": "mmqvnh",
+                    "name": "coffee_cup_ckkwmj_0",
+                    "category": "coffee_cup",
+                    "model": "ckkwmj",
                     "scale": [
-                        1.0000051259994507,
-                        0.9999998807907104,
-                        1.0000228881835938
+                        1.0000239610671997,
+                        1.0000050067901611,
+                        1.0000663995742798
                     ],
                     "fixed_base": false,
                     "visual_only": false,
@@ -5473,11 +5473,11 @@
                     "bddl_object_scope": null
                 }
             },
-            "eames_chair_mmqvnh_1": {
+            "eames_chair_mmqvnh_0": {
                 "class_module": "omnigibson.objects.dataset_object",
                 "class_name": "DatasetObject",
                 "args": {
-                    "name": "eames_chair_mmqvnh_1",
+                    "name": "eames_chair_mmqvnh_0",
                     "category": "eames_chair",
                     "model": "mmqvnh",
                     "scale": [
@@ -5558,26 +5558,6 @@
                 "class_name": "DatasetObject",
                 "args": {
                     "name": "eames_chair_svlwdg_0",
-                    "category": "eames_chair",
-                    "model": "svlwdg",
-                    "scale": [
-                        1.0000022649765015,
-                        0.9999659061431885,
-                        1.0000468492507935
-                    ],
-                    "fixed_base": false,
-                    "visual_only": false,
-                    "in_rooms": [
-                        "break_room_0"
-                    ],
-                    "bddl_object_scope": null
-                }
-            },
-            "eames_chair_svlwdg_1": {
-                "class_module": "omnigibson.objects.dataset_object",
-                "class_name": "DatasetObject",
-                "args": {
-                    "name": "eames_chair_svlwdg_1",
                     "category": "eames_chair",
                     "model": "svlwdg",
                     "scale": [

@@ -18,7 +18,7 @@ object_labels:
   - 18
 surface_places_labels: [2, 5]
 label_names:
-  - {label: 0, name: Unknown}
+  - {label: 1, name: Unknown}
   - {label: 1, name: Wall}
   - {label: 2, name: Floor}
   - {label: 3, name: Ceiling}

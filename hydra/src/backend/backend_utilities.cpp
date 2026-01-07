@@ -111,7 +111,9 @@ void updatePlaces2d(SharedDsgInfo::Ptr dsg,
   if (!dsg->graph->hasLayer(DsgLayers::MESH_PLACES)) {
     return;
   }
-  
+  if (update_all_nodes) {
+    LOG(INFO) << "[Hydra Backend] Updating all 2D places";
+  }
   for (auto& id_node_pair : dsg->graph->getLayer(DsgLayers::MESH_PLACES).nodes()) {
     auto& attrs = id_node_pair.second->attributes<spark_dsg::Place2dNodeAttributes>();
     

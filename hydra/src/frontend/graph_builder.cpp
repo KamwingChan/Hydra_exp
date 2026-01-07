@@ -506,45 +506,43 @@ void GraphBuilder::updateMesh(const ActiveWindowOutput& input) {
     ScopedTimer timer("frontend/mesh_update", input.timestamp_ns, true, 1, false);
     
     // CRITICAL: Preserve loaded mesh semantics for continue mapping
-    std::vector<uint32_t> preserved_labels;
-    const size_t vertex_start = last_mesh_update_->vertex_start;
-    
-    if (vertex_start > 0 && dsg_->graph->mesh()->has_labels) {
-      // Save semantic labels from loaded mesh
-      const auto& current_labels = dsg_->graph->mesh()->labels;
-      if (current_labels.size() >= vertex_start) {
-        preserved_labels.assign(current_labels.begin(), 
-                               current_labels.begin() + vertex_start);
-        VLOG(5) << "[Hydra Frontend] Preserved " << preserved_labels.size() 
-                << " semantic labels from loaded mesh";
-      }
-    }
-    
+    // std::vector<uint32_t> preserved_labels;
+    // const size_t vertex_start = last_mesh_update_->vertex_start;
+    // if (vertex_start > 0 && dsg_->graph->mesh()->has_labels) {
+    //   // Save semantic labels from loaded mesh
+    //   const auto& current_labels = dsg_->graph->mesh()->labels;
+    //   if (current_labels.size() >= vertex_start) {
+    //     preserved_labels.assign(current_labels.begin(), 
+    //                            current_labels.begin() + vertex_start);
+    //     VLOG(5) << "[Hydra Frontend] Preserved " << preserved_labels.size() 
+    //             << " semantic labels from loaded mesh";
+    //   }
+    // }
+
+    // TODO(kamwing): clean up invalid faces in the mesh
+    // {
+    //   const size_t total_vertices = last_mesh_update_->getTotalVertices();
+    //   auto& face_updates = last_mesh_update_->face_updates;
+    //   const size_t original_size = face_updates.size();
+      
+    //   face_updates.erase(
+    //     std::remove_if(face_updates.begin(), face_updates.end(),
+    //       [total_vertices](const kimera_pgmo::Face& face) {
+    //         return face.v1 >= total_vertices || 
+    //                face.v2 >= total_vertices || 
+    //                face.v3 >= total_vertices;
+    //       }),
+    //     face_updates.end()
+    //   );
+      
+    //   if (face_updates.size() < original_size) {
+    //     LOG(WARNING) << "[GraphBuilder] Removed " << (original_size - face_updates.size())
+    //                  << " invalid faces after remapping (total vertices: " << total_vertices << ")";
+    //   }
+    // }
+
     // Apply mesh delta update
     last_mesh_update_->updateMesh(*dsg_->graph->mesh());
-    // Mesh consistency check
-    const auto& mesh_ref = *dsg_->graph->mesh();
-    if (mesh_ref.has_labels && mesh_ref.labels.size() != mesh_ref.points.size()) {
-      LOG(WARNING) << "[MeshCheck] labels != points: "
-                   << mesh_ref.labels.size() << " vs " << mesh_ref.points.size();
-    } else {
-      VLOG(1) << "[MeshCheck] labels==points: " << mesh_ref.points.size();
-    }
-    
-    // DEBUG: Check MeshDelta status
-    VLOG(1) << "[DEBUG] MeshDelta: vertex_updates=" << last_mesh_update_->vertex_updates->size()
-              << ", semantic_updates=" << last_mesh_update_->semantic_updates.size()
-              << ", hasSemantics=" << last_mesh_update_->hasSemantics();
-    
-    // Restore preserved semantics
-    if (!preserved_labels.empty()) {
-      auto& labels = dsg_->graph->mesh()->labels;
-      if (labels.size() >= vertex_start) {
-        std::copy(preserved_labels.begin(), preserved_labels.end(), labels.begin());
-        VLOG(5) << "[Hydra Frontend] Restored " << preserved_labels.size() 
-                << " semantic labels for continue mapping";
-      }
-    }
   }  // end timing scope
 
   ScopedTimer timer("frontend/postmesh_callbacks", input.timestamp_ns, true, 1, false);

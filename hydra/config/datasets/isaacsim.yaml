@@ -16,7 +16,7 @@ frontend:
     d_graph_resolution: 2.5
     mesh_resolution: 0.015
   objects:
-    min_cluster_size: 40
+    min_cluster_size: 28
     cluster_tolerance: 0.25
   surface_places:
     type: place_2d

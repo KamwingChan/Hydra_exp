@@ -1,33 +1,33 @@
 ---
 map_window:
   type: spatial
-  max_radius_m: 8.0
+  max_radius_m: 16.0
 active_window:
   volumetric_map:
     voxels_per_side: 16
-    voxel_size: 0.05
+    voxel_size: 0.03
     truncation_distance: 0.12
   tsdf:
     semantic_integrator:
-      type: MLESemanticIntegrator
+      type: NearestSemanticIntegrator
 frontend:
   pgmo:
     time_horizon: 15.0
-    d_graph_resolution: 2.5
-    mesh_resolution: 0.015
+    d_graph_resolution: 1.0 #2.5
+    mesh_resolution: 0.005
   objects:
-    min_cluster_size: 40
-    cluster_tolerance: 0.15
-  #surface_places:
-    #type: place_2d
-    #prefix: P
-    #pure_final_place_size: 1
-    #cluster_tolerance: .3
-    #min_cluster_size: 50
-    #max_cluster_size: 100000
-    #min_final_place_points: 10
-    #place_max_neighbor_z_diff: .5
-    #place_overlap_threshold: 0.0
+    min_cluster_size: 5
+    cluster_tolerance: 0.35
+  surface_places:
+    type: place_2d
+    prefix: P
+    pure_final_place_size: 1
+    cluster_tolerance: .3
+    min_cluster_size: 50
+    max_cluster_size: 100000
+    min_final_place_points: 10
+    place_max_neighbor_z_diff: .5
+    place_overlap_threshold: 0.0
   freespace_places:
     type: gvd
     filter_places: true
@@ -35,7 +35,7 @@ frontend:
     filter_ground: false
     gvd:
       max_distance_m: 4.5
-      min_distance_m: 0.10
+      min_distance_m: 0.05
       min_diff_m: 0.1
       voronoi_config:
         mode: L1_THEN_ANGLE
@@ -74,8 +74,8 @@ backend:
       type: UpdateAgentsFunctor
     objects:
       type: UpdateObjectsFunctor
-    #surface_places:
-      #type: Update2dPlacesFunctor
+    surface_places:
+      type: Update2dPlacesFunctor
     places:
       type: UpdatePlacesFunctor
     frontiers:

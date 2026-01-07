@@ -1,6 +1,7 @@
 #Big file
 source/assets/
 phy_plan/test/
+phy_plan/experiments
 # C++
 **/cmake-build*/
 **/build*/

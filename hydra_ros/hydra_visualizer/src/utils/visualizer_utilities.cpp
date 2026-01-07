@@ -759,16 +759,40 @@ kimera_pgmo_msgs::KimeraPgmoMesh makeMeshMsg(const std_msgs::Header& header,
     auto& vertex = msg.vertices[i];
     tf2::convert(mesh.points[i].cast<double>().eval(), vertex);
     auto& color = msg.vertex_colors[i];
-    color = visualizer::makeColorMsg(adaptor.getVertexColor(i));
+    
+    // 🔒 防止 color 访问越界
+    try {
+      color = visualizer::makeColorMsg(adaptor.getVertexColor(i));
+    } catch (const std::out_of_range& e) {
+      LOG(WARNING) << "[makeMeshMsg] Color access out of range for vertex " << i
+                   << ": " << e.what() << ". Using default color.";
+      color = visualizer::makeColorMsg(spark_dsg::Color::gray());
+    }
   }
 
-  msg.triangles.resize(mesh.faces.size());
+  // 🔒 验证并过滤无效 faces (最后防线)
+  const size_t num_vertices = mesh.points.size();
+  msg.triangles.reserve(mesh.faces.size());
+  size_t skipped_faces = 0;
+
   for (size_t i = 0; i < mesh.faces.size(); ++i) {
     const auto& face = mesh.faces[i];
-    auto& triangle = msg.triangles[i].vertex_indices;
-    triangle[0] = face[0];
-    triangle[1] = face[1];
-    triangle[2] = face[2];
+    
+    // 检查 face 的所有顶点索引是否有效
+    if (face[0] >= num_vertices || face[1] >= num_vertices || face[2] >= num_vertices) {
+      ++skipped_faces;
+      continue;
+    }
+    
+    auto& triangle = msg.triangles.emplace_back();
+    triangle.vertex_indices[0] = face[0];
+    triangle.vertex_indices[1] = face[1];
+    triangle.vertex_indices[2] = face[2];
+  }
+
+  if (skipped_faces > 0) {
+    LOG(WARNING) << "[makeMeshMsg] Skipped " << skipped_faces << " invalid faces "
+                 << "(vertices: " << num_vertices << ", total faces: " << mesh.faces.size() << ")";
   }
 
   return msg;

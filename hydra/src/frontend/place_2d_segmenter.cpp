@@ -278,6 +278,7 @@ void Place2dSegmenter::detect(const ActiveWindowOutput&,
   }
 
   const auto& mesh = *CHECK_NOTNULL(graph.mesh());
+  
   LabelIndices label_indices = getLabelIndices(mesh.labels, *active_indices);
   if (label_indices.empty()) {
     VLOG(5) << "[Places 2d Segmenter] No vertices found matching desired labels";

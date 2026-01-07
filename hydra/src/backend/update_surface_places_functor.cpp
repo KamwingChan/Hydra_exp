@@ -124,68 +124,6 @@ void Update2dPlacesFunctor::call(const DynamicSceneGraph& unmerged,
   const auto new_loopclosure = info->loop_closure_detected;
   const auto mesh = unmerged.mesh();
   
-  // ========== Defensive index cleanup for continue_mapping mode ==========
-  // Problem: mergeGraph() may overwrite indices updated in copyMeshDelta()
-  // Solution: Clean all invalid indices before use to prevent out-of-bounds access
-  const bool is_continue_mapping = 
-      GlobalInfo::instance().getConfig().continue_mapping;
-  
-  if (is_continue_mapping && mesh && !mesh->empty()) {
-    const size_t mesh_size = mesh->numVertices();
-    size_t cleaned_connections = 0;
-    size_t cleaned_boundaries = 0;
-    
-    for (const auto& [id, node_ptr] : layer.nodes()) {
-      auto& attrs = node_ptr->attributes<Place2dNodeAttributes>();
-      
-      // Clean pcl_mesh_connections
-      if (!attrs.pcl_mesh_connections.empty()) {
-        const size_t before = attrs.pcl_mesh_connections.size();
-        attrs.pcl_mesh_connections.erase(
-          std::remove_if(attrs.pcl_mesh_connections.begin(), 
-                        attrs.pcl_mesh_connections.end(),
-            [mesh_size](size_t idx) { return idx >= mesh_size; }),
-          attrs.pcl_mesh_connections.end()
-        );
-        cleaned_connections += (before - attrs.pcl_mesh_connections.size());
-        
-        // Update min/max indices
-        if (!attrs.pcl_mesh_connections.empty()) {
-          attrs.pcl_min_index = *std::min_element(attrs.pcl_mesh_connections.begin(),
-                                                  attrs.pcl_mesh_connections.end());
-          attrs.pcl_max_index = *std::max_element(attrs.pcl_mesh_connections.begin(),
-                                                  attrs.pcl_mesh_connections.end());
-        }
-      }
-      
-      // Clean pcl_boundary_connections (must sync with boundary vector)
-      if (!attrs.pcl_boundary_connections.empty()) {
-        std::vector<Eigen::Vector3d> cleaned_boundary;
-        std::vector<size_t> cleaned_boundary_indices;
-        cleaned_boundary.reserve(attrs.boundary.size());
-        cleaned_boundary_indices.reserve(attrs.pcl_boundary_connections.size());
-        
-        for (size_t i = 0; i < attrs.pcl_boundary_connections.size() && 
-                          i < attrs.boundary.size(); ++i) {
-          if (attrs.pcl_boundary_connections[i] < mesh_size) {
-            cleaned_boundary.push_back(attrs.boundary[i]);
-            cleaned_boundary_indices.push_back(attrs.pcl_boundary_connections[i]);
-          } else {
-            cleaned_boundaries++;
-          }
-        }
-        
-        attrs.boundary = std::move(cleaned_boundary);
-        attrs.pcl_boundary_connections = std::move(cleaned_boundary_indices);
-      }
-    }
-    
-    if (cleaned_connections > 0 || cleaned_boundaries > 0) {
-      VLOG(2) << "[Update2dPlacesFunctor] Cleaned " << cleaned_connections 
-              << " mesh connections and " << cleaned_boundaries 
-              << " boundary connections (mesh size: " << mesh_size << ")";
-    }
-  }
 
   active_tracker.clear();  // reset from previous pass
   const auto view = new_loopclosure ? LayerView(layer) : active_tracker.view(layer);

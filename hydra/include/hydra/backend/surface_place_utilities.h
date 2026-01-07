@@ -40,6 +40,12 @@
 
 namespace hydra::utils {
 
+// 清理 place 节点中的越界索引(仅在 continue_mapping 模式)
+// 返回 true 如果清理后节点仍然有效,false 如果节点变空
+// bool cleanInvalidIndicesIfNeeded(Place2dNodeAttributes& attrs, 
+//                                   size_t mesh_size,
+//                                   NodeId node_id);
+
 void getPlace2dAndNeighors(const SceneGraphLayer& places_layer,
                            std::vector<std::pair<NodeId, Place2d>>& place_2ds,
                            std::map<NodeId, std::set<NodeId>>& node_neighbors);

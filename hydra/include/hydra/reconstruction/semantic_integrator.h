@@ -87,6 +87,22 @@ class MLESemanticIntegrator : public SemanticIntegrator {
   Eigen::MatrixXf observation_likelihoods_;
 };
 
+class NearestSemanticIntegrator : public SemanticIntegrator {
+ public:
+  struct Config {};
+  explicit NearestSemanticIntegrator(const Config& config);
+
+  bool canIntegrate(uint32_t label) const override;
+  bool isValidLabel(uint32_t label) const override;
+  void updateLikelihoods(uint32_t label, SemanticVoxel& voxel) const override;
+
+ protected:
+  size_t total_labels_;
+  std::set<uint32_t> dynamic_labels_;
+  std::set<uint32_t> invalid_labels_;
+};
+
 void declare_config(MLESemanticIntegrator::Config& config);
 
+void declare_config(NearestSemanticIntegrator::Config& config);
 }  // namespace hydra

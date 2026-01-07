@@ -47,12 +47,32 @@ size_t MergeTracker::applyMerges(const DynamicSceneGraph& unmerged,
   size_t num_applied = 0;
   auto& graph = *dsg.graph;
   std::set<NodeId> to_update;
+
+  // 清理已经指向不存在节点的历史合并，避免后续重复 warning
+  for (auto iter = prior_merges.begin(); iter != prior_merges.end();) {
+    const bool from_exists = graph.hasNode(iter->first);
+    const bool to_exists = graph.hasNode(iter->second);
+    if (!from_exists || !to_exists) {
+      iter = prior_merges.erase(iter);
+    } else {
+      ++iter;
+    }
+  }
+
   for (const auto& orig_merge : proposals) {
     const auto merge = orig_merge.remap(prior_merges);
     if (merge.from == merge.to) {
       VLOG(10) << "Found present merge: " << orig_merge << " (remapped: " << merge
                << ")";
       to_update.insert(merge.to);
+      continue;
+    }
+
+    // 如果源或目标节点已不存在，直接跳过，避免无意义的警告
+    if (!graph.hasNode(merge.from) || !graph.hasNode(merge.to)) {
+      VLOG(5) << "[MergeDebug] skip missing node merge: " << merge
+              << " | from:" << graph.hasNode(merge.from)
+              << " | to:" << graph.hasNode(merge.to);
       continue;
     }
 

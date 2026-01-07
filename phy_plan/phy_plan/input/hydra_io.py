@@ -12,7 +12,9 @@ from ..core.scene_graph import (
     ObjectNode, 
     RoomNode, 
     BoundingBox, 
-    PhysicalProperties
+    PhysicalProperties,
+    PlaceGvdEdge,
+    PlaceGvdGraph
 )
 
 logger = logging.getLogger(__name__)
@@ -110,7 +112,10 @@ def load_scene_graph(file_path: Union[str, pathlib.Path]) -> SceneGraph:
             places.append(place_info)
     
     sg.metadata["places"] = places
-    
+    gvd_nodes = []
+    for place in places:
+        gvd_nodes.append(PlaceGvdNode(place_id=place["node_id"], centroid=place["position"], distance=place["distance"]))
+    sg.gvd_graph = PlaceGvdGraph(PlaceGvdNodes=places, PlaceGvdEdges=_get_place_edges(G))
     # --- [NEW] 5. Process Dynamic Agents (轨迹/动态规划关键) ---
     # Hydra 存储动态层的方式是：DSG -> Dynamic Layers -> Layer(Prefix) -> Nodes(Time Series)
     agents_data = {}
@@ -240,3 +245,29 @@ def _convert_room_node(node, G) -> Optional[RoomNode]:
     except Exception as e:
         logger.warning(f"Error converting room node {node.id}: {e}")
         return None 
+
+def _get_place_edges(G) -> Optional[List[PlaceGvdEdge]]:
+    """Get place edges from GVD"""
+    if not G.has_layer(dsg.DsgLayers.PLACES):
+        return None
+    
+    layer = G.get_layer(dsg.DsgLayers.PLACES)
+    edges: List[PlaceGvdEdge] = []
+    edge_set = set()
+
+    if hasattr(layer, 'edges'):
+        for edge_item in layer.edges:
+            source_id = edge_item.source
+            target_id = edge_item.target
+            edge_info = edge_item
+            edge_key_tuple = tuple(sorted([source_id, target_id]))
+            if edge_key_tuple in edge_set:
+                continue
+            edge_set.add(edge_key_tuple)
+            if hasattr(edge_info, 'info') and hasattr(edge_info.info, 'weight'):
+                weight = edge_info.info.weight
+            else:
+                weight = 0.0
+            edges.append(PlaceGvdEdge(source_id=source_id, target_id=target_id, weight=weight))
+
+    return edges

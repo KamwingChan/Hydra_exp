@@ -52,7 +52,12 @@ static const auto registration =
                                    MLESemanticIntegrator::Config>(
         "MLESemanticIntegrator");
 
-}
+static const auto registration_nearest =
+    config::RegistrationWithConfig<SemanticIntegrator,
+                                   NearestSemanticIntegrator,
+                                   NearestSemanticIntegrator::Config>(
+        "NearestSemanticIntegrator");
+} // namespace
 
 MLESemanticIntegrator::MLESemanticIntegrator(const Config& config) : config(config) {
   total_labels_ = GlobalInfo::instance().getTotalLabels();
@@ -103,6 +108,36 @@ void MLESemanticIntegrator::updateLikelihoods(uint32_t label,
   voxel.semantic_likelihoods.maxCoeff(&voxel.semantic_label);
 }
 
+NearestSemanticIntegrator::NearestSemanticIntegrator(const Config&) {
+  total_labels_ = GlobalInfo::instance().getTotalLabels();
+  const auto label_config = GlobalInfo::instance().getLabelSpaceConfig();
+  dynamic_labels_ = label_config.dynamic_labels;
+  invalid_labels_ = label_config.invalid_labels;
+}
+
+bool NearestSemanticIntegrator::canIntegrate(uint32_t label) const {
+  if (dynamic_labels_.count(label)) {
+    return false;
+  }
+
+  if (invalid_labels_.count(label)) {
+    return false;
+  }
+  return true;
+}
+
+bool NearestSemanticIntegrator::isValidLabel(uint32_t label) const {
+  if (label >= total_labels_) {
+    return false;
+  }
+  return canIntegrate(label);
+}
+
+void NearestSemanticIntegrator::updateLikelihoods(uint32_t label, SemanticVoxel& voxel) const {
+  voxel.semantic_label = label;
+  voxel.empty = false;
+}
+
 void declare_config(MLESemanticIntegrator::Config& config) {
   using namespace config;
   name("MLESemanticIntegrator::Config");
@@ -113,6 +148,9 @@ void declare_config(MLESemanticIntegrator::Config& config) {
                "label_confidence is valid probability",
                false,
                true);
+}
+
+void declare_config(NearestSemanticIntegrator::Config& config) {
 }
 
 }  // namespace hydra

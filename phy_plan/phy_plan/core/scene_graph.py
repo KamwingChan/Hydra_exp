@@ -1,8 +1,8 @@
 """
 scene_graph.py: 统一场景图接口
 
-抽象不同来源（phy_graph JSON / Hydra DSG）的场景图，
-提供统一的查询接口供 planner 和 visualization 使用。
+abstract the scene graph from different sources (phy_graph JSON / Hydra DSG),
+provide a unified query interface for planner and visualization.
 """
 
 from dataclasses import dataclass, field
@@ -12,7 +12,7 @@ import json
 
 @dataclass
 class BoundingBox:
-    """物体包围盒"""
+    """bounding box of the object"""
     min_point: List[float]  # [x, y, z]
     max_point: List[float]  # [x, y, z]
     
@@ -79,6 +79,7 @@ class ObjectNode:
     node_id: str                   # 如 "O(13)"
     category: str                  # 物体类别，如 "chair", "table"
     position: List[float]          # [x, y, z]
+    orientation: Optional[List[float]] = None  # [roll, pitch, yaw]
     bounding_box: Optional[BoundingBox] = None
     physical_properties: Optional[PhysicalProperties] = None
     room_id: Optional[str] = None  # 所属房间 ID
@@ -100,10 +101,12 @@ class ObjectNode:
             }
         if self.room_id:
             result["room_id"] = self.room_id
+        if self.orientation:
+            result["orientation"] = {"roll": self.orientation[0], "pitch": self.orientation[1], "yaw": self.orientation[2]}
         return result
     
     def to_compact(self) -> Dict[str, Any]:
-        """转换为 compact 格式（用于 LLM）"""
+        """convert to compact format (for LLM)"""
         return {
             "node_id": self.node_id,
             "category": self.category,
@@ -170,6 +173,25 @@ class RoomNode:
             description=d.get("description", "")
         )
 
+@dataclass
+class PlaceGvdNode:
+    """place node in GVD"""
+    place_id: int                   # 如 1             # 位置类别，如 "LivingRoom", "DiningRoom"
+    centroid: List[float]          # [x, y, z]
+    distance: float
+
+@dataclass
+class PlaceGvdEdge:
+    """place edge in GVD"""
+    source_id: int
+    target_id: int
+    weight: float
+    
+@dataclass
+class PlaceGvdGraph:
+    """place graph in GVD"""
+    PlaceGvdNodes: List[PlaceGvdNode] = field(default_factory=list)
+    PlaceGvdEdges: List[PlaceGvdEdge] = field(default_factory=list)
 
 class SceneGraph:
     """
@@ -181,6 +203,7 @@ class SceneGraph:
     def __init__(self):
         self.objects: Dict[str, ObjectNode] = {}
         self.rooms: Dict[str, RoomNode] = {}
+        self.gvd_graph: Optional[PlaceGvdGraph] = None
         self.timestamp: str = ""
         self.source: str = ""  # "phy_graph" or "hydra"
         self.metadata: Dict[str, Any] = {}
@@ -218,6 +241,9 @@ class SceneGraph:
         """获取所有房间"""
         return list(self.rooms.values())
     
+    def get_gvd_graph(self) -> Optional[PlaceGvdGraph]:
+        """获取 GVD 图"""
+        return self.gvd_graph
     # ==================== 转换接口 ====================
     
     def to_compact_json(self) -> str:
@@ -252,6 +278,55 @@ class SceneGraph:
     def to_json(self, indent: int = 2) -> str:
         """转换为 JSON 字符串"""
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
+    
+    def to_verbose_description(self, include_objects: bool = True) -> str:
+        """
+        生成自然语言描述（用于 LLM prompt）
+        
+        参考 context-matters 的 get_verbose_scene_graph() 设计。
+        
+        Args:
+            include_objects: 是否包含物体详细列表
+            
+        Returns:
+            场景的自然语言描述
+        """
+        lines = []
+        
+        # 房间概览
+        room_labels = [f"{r.category}({r.room_id})" for r in self.rooms.values()]
+        if room_labels:
+            lines.append(f"The scene contains {len(self.rooms)} rooms: {', '.join(room_labels)}.")
+        else:
+            lines.append("The scene has no defined rooms.")
+        
+        # 每个房间的内容
+        if include_objects:
+            for room in self.rooms.values():
+                objects_in_room = self.get_objects_in_room(room.room_id)
+                if objects_in_room:
+                    obj_list = [f"{obj.category}({obj.node_id})" for obj in objects_in_room]
+                    lines.append(f"The {room.category}({room.room_id}) contains: {', '.join(obj_list)}.")
+                else:
+                    lines.append(f"The {room.category}({room.room_id}) has no objects.")
+            
+            # 未分配房间的物体
+            orphan_objects = [obj for obj in self.objects.values() if not obj.room_id]
+            if orphan_objects:
+                obj_list = [f"{obj.category}({obj.node_id})" for obj in orphan_objects]
+                lines.append(f"Objects without room assignment: {', '.join(obj_list)}.")
+        
+        # 物体统计
+        category_counts: Dict[str, int] = {}
+        for obj in self.objects.values():
+            cat = obj.category
+            category_counts[cat] = category_counts.get(cat, 0) + 1
+        
+        if category_counts:
+            stats = [f"{count} {cat}(s)" for cat, count in sorted(category_counts.items(), key=lambda x: -x[1])]
+            lines.append(f"Total objects: {len(self.objects)} ({', '.join(stats)}).")
+        
+        return "\n".join(lines)
     
     # ==================== 统计信息 ====================
     

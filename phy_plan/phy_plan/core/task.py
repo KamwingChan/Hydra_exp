@@ -18,14 +18,11 @@ class ActionType(Enum):
     PICK = "pick"                 # 抓取物体
     PLACE = "place"               # 放置物体到指定位置
     MOVE_OBJECT = "move_object"   # 移动物体（pick + place 的组合）
-    
     # 机器人移动
     NAVIGATE = "navigate"         # 导航到位置
-    
     # 高层动作（可分解为低层动作序列）
     ARRANGE = "arrange"           # 摆放物体（如椅子归位）
     CLEAN_UP = "clean_up"         # 整理区域
-    
     # 感知动作
     OBSERVE = "observe"           # 观察/获取物体信息
     LOCATE = "locate"             # 定位物体
