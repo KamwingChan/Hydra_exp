@@ -1,12 +1,13 @@
 """
-llm_planner.py: LLM 任务规划器
+llm_planner.py: LLM task planner
 
-使用 LLM 根据场景图和自然语言指令生成任务序列。
+use LLM to generate task sequence based on scene graph and natural language instruction.
 """
 
 import json
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..core.agent import LLMAgent
 from ..core.scene_graph import SceneGraph
@@ -14,24 +15,36 @@ from ..core.task import TaskSequence, Action, ActionType, Position
 from ..prompts.task_planning_prompt import generate_task_planning_prompt
 
 
+@dataclass
+class ClarificationRequest:
+    """
+    clarification request
+    
+    when LLM needs user clarification, return this object.
+    """
+    question: str
+    candidates: List[Dict[str, Any]]
+    chain_of_thought: str
+
+
 class LLMPlanner:
     """
-    LLM 任务规划器
+    LLM task planner
     
     流程：
-    1. 将场景图转为 compact JSON
-    2. 生成 prompt
-    3. 调用 LLM
-    4. 解析响应为 TaskSequence
+    1. convert scene graph to compact JSON
+    2. generate prompt
+    3. call LLM
+    4. parse response to TaskSequence
     """
     
     def __init__(self, agent: Optional[LLMAgent] = None, model: str = "gpt-4o-mini"):
         """
-        初始化规划器
+        initialize planner
         
         Args:
-            agent: LLM Agent（可选，不提供则自动创建）
-            model: 模型名称
+            agent: LLM Agent (optional, auto-created if not provided)
+            model: model name
         """
         self.agent = agent or LLMAgent(model=model)
     
@@ -39,46 +52,126 @@ class LLMPlanner:
         self, 
         scene_graph: SceneGraph, 
         instruction: str,
-        include_example: bool = True
-    ) -> Tuple[TaskSequence, Dict[str, Any]]:
+        include_example: bool = True,
+        debug: bool = True
+    ) -> Tuple[Union[TaskSequence, ClarificationRequest], Dict[str, Any]]:
         """
-        根据场景图和指令生成任务序列
+        generate task sequence or clarification request based on scene graph and instruction
         
         Args:
-            scene_graph: 场景图对象
-            instruction: 自然语言指令
-            include_example: 是否在 prompt 中包含示例
+            scene_graph: scene graph object
+            instruction: natural language instruction
+            include_example: whether to include example in prompt
+            debug: whether to print debug information
             
         Returns:
-            (TaskSequence, raw_response_dict) 元组
+            (TaskSequence 或 ClarificationRequest, raw_response_dict) 元组
         """
-        # 1. 生成 prompt
+        # 1. generate prompt
         compact_json = scene_graph.to_compact_json()
         system_content, user_prompt = generate_task_planning_prompt(
             compact_json, instruction, include_example
         )
         
-        # 2. 调用 LLM
+        # DEBUG: print prompt
+        if debug:
+            print("\n" + "="*40 + " DEBUG: PROMPT " + "="*40)
+            print(f"System Content Preview:\n{system_content[:200]}...")
+            print(f"\nUser Prompt:\n{user_prompt}")
+            print("="*95 + "\n")
+        
+        # 2. call LLM
         print(f"[LLMPlanner] Calling {self.agent.model}...")
         response_text = self.agent.llm_call(system_content, user_prompt)
+        
+        # DEBUG: 打印 Response
+        if debug:
+            print("\n" + "="*40 + " DEBUG: RESPONSE " + "="*40)
+            print(response_text)
+            print("="*97 + "\n")
         
         # 3. 解析响应
         response_dict = self._parse_response(response_text)
         
-        # 4. 转换为 TaskSequence（带详细信息检索）
+        # 4. check if clarification is needed
+        if response_dict.get("clarification_needed", False):
+            candidates = response_dict.get("candidates", [])
+            # fill in detailed information (coordinates, physical properties)
+            self._enrich_candidates(candidates, scene_graph)
+            
+            clarification = ClarificationRequest(
+                question=response_dict.get("question", ""),
+                candidates=candidates,
+                chain_of_thought=response_dict.get("chain_of_thought", "")
+            )
+            return clarification, response_dict
+        
+        # 5. convert to TaskSequence (with detailed information retrieval)
         task_seq = self._convert_to_task_sequence(response_dict, scene_graph, instruction)
         
         return task_seq, response_dict
     
+    def _enrich_candidates(self, candidates: List[Dict[str, Any]], scene_graph: SceneGraph) -> None:
+        """
+        fill in candidate object detailed information (Stage 2 Retrieval)
+        
+        defensive filling: only add when attribute exists, ensure it works even when there is no physical property data.
+        also supports filling room information (if there is room ambiguity).
+        """
+        for cand in candidates:
+            # === handle object candidates ===
+            obj_id = cand.get("object_id")
+            if obj_id:
+                full_obj = scene_graph.get_object(obj_id)
+                if full_obj:
+                    # 1. basic filling: coordinates
+                    if full_obj.position and len(full_obj.position) >= 3:
+                        cand["position_desc"] = f"[{full_obj.position[0]:.2f}, {full_obj.position[1]:.2f}, {full_obj.position[2]:.2f}]"
+                    
+                    # 2. optional filling: bounding box
+                    if full_obj.bounding_box:
+                        cand["bounding_box"] = f"[min: {full_obj.bounding_box.min_point}, max: {full_obj.bounding_box.max_point}]"
+                    
+                    # 3. optional filling: physical properties
+                    if full_obj.physical_properties:
+                        props = full_obj.physical_properties
+                        details = []
+                        if props.weight_level is not None:
+                            details.append(f"weight level:{props.weight_level}")
+                        if props.pushable is not None:
+                            details.append(f"pushable: {'yes' if props.pushable else 'no'}")
+                        if details:
+                            cand["phys_desc"] = ", ".join(details)
+                    
+                        # 4. optional filling: description
+                    if hasattr(full_obj, 'physical_properties') and full_obj.physical_properties and full_obj.physical_properties.description:
+                        cand["description"] = full_obj.physical_properties.description
+                continue # object handled, skip
+
+            # === handle room candidates (if LLM returns room_id without object_id) ===
+            room_id = cand.get("room_id")
+            if room_id:
+                full_room = scene_graph.get_room(room_id)
+                if full_room:
+                    # fill in room coordinates
+                    if full_room.centroid:
+                        cand["position_desc"] = f"[{full_room.centroid[0]:.2f}, {full_room.centroid[1]:.2f}, {full_room.centroid[2]:.2f}]"
+                    # fill in description
+                    if full_room.description:
+                        cand["description"] = full_room.description
+
     def _parse_response(self, response_text: str) -> Dict[str, Any]:
         """
-        解析 LLM 响应文本为字典
+        parse LLM response text to dictionary
         
         Args:
-            response_text: LLM 响应文本
+            response_text: LLM response text
             
         Returns:
-            解析后的字典
+            parsed dictionary
+            
+        Raises:
+            ValueError: if cannot parse JSON
         """
         # 尝试提取 JSON（处理 markdown 代码块）
         json_str = response_text
@@ -99,10 +192,36 @@ class LLMPlanner:
         
         json_str = json_str[start_idx:end_idx]
         
+        # 移除 JSON 中的单行注释（// ...）
+        # LLM 有时会在 JSON 中添加注释，但标准 JSON 不支持
+        json_str = re.sub(r'//[^\n]*', '', json_str)
+        
+        # 移除 JSON 中的多行注释（/* ... */）
+        json_str = re.sub(r'/\*.*?\*/', '', json_str, flags=re.DOTALL)
+        
         try:
             return json.loads(json_str)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Failed to parse JSON: {e}\nResponse: {json_str[:500]}")
+            # 增强错误信息，帮助诊断截断问题
+            error_msg = f"Failed to parse JSON: {e}"
+            
+            # 检查常见的截断模式
+            if not json_str.rstrip().endswith('}'):
+                error_msg += "\n[HINT] JSON appears to be truncated (missing closing brace)"
+                error_msg += "\n[HINT] This may be caused by max_tokens limit. Check agent.py logs for warnings."
+            
+            # 检查是否还有注释残留
+            if '//' in json_str or '/*' in json_str:
+                error_msg += "\n[HINT] JSON may contain comments that weren't properly removed"
+            
+            # 显示问题位置的上下文
+            error_position = e.pos if hasattr(e, 'pos') else len(json_str)
+            context_start = max(0, error_position - 100)
+            context_end = min(len(json_str), error_position + 100)
+            error_msg += f"\n\nError context around position {error_position}:\n"
+            error_msg += f"...{json_str[context_start:context_end]}..."
+            
+            raise ValueError(error_msg)
     
     def _convert_to_task_sequence(
         self, 
@@ -245,14 +364,14 @@ class LLMPlanner:
         self, 
         scene_graph: SceneGraph, 
         instruction: str
-    ) -> Tuple[TaskSequence, Dict[str, Any], str]:
+    ) -> Tuple[Union[TaskSequence, ClarificationRequest], Dict[str, Any], str]:
         """
         规划并返回详细信息（包括 prompt）
         
         用于调试和可视化。
         
         Returns:
-            (TaskSequence, response_dict, prompt_text) 元组
+            (TaskSequence 或 ClarificationRequest, response_dict, prompt_text) 元组
         """
         compact_json = scene_graph.to_compact_json()
         system_content, user_prompt = generate_task_planning_prompt(
@@ -261,6 +380,6 @@ class LLMPlanner:
         
         full_prompt = f"=== SYSTEM ===\n{system_content}\n\n=== USER ===\n{user_prompt}"
         
-        task_seq, response_dict = self.plan(scene_graph, instruction)
+        result, response_dict = self.plan(scene_graph, instruction)
         
-        return task_seq, response_dict, full_prompt
+        return result, response_dict, full_prompt

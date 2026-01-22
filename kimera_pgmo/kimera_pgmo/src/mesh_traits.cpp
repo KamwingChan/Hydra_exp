@@ -45,9 +45,7 @@ size_t pgmoNumFaces(const std::vector<pcl::Vertices>& faces) { return faces.size
 
 traits::Face pgmoGetFace(const std::vector<pcl::Vertices>& faces, size_t i) {
   const auto& tri = faces.at(i);
-  return {static_cast<size_t>(tri.vertices.at(0)),
-          static_cast<size_t>(tri.vertices.at(1)),
-          static_cast<size_t>(tri.vertices.at(2))};
+  return {tri.vertices.at(0), tri.vertices.at(1), tri.vertices.at(2)};
 }
 
 void pgmoResizeFaces(std::vector<pcl::Vertices>& faces, size_t size) {

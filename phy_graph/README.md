@@ -13,9 +13,11 @@
 - **3D-to-2D Projection**: Projects 3D mesh vertices onto RGB images for accurate object extraction
 - **Intelligent Image Selection**: Scores and selects the best view of each object using visibility, coverage, and position metrics
 - **VLM-based Physical Inference**: Uses OpenAI GPT-4o-mini to infer physical properties from object images
+- **Async Inference Queue**: Non-blocking priority queue for efficient multi-object processing
 - **Hybrid Keyframe Storage**: Efficiently manages image data with hot (memory) and cold (disk) storage
 - **Scene Graph Integration**: Combines physical properties with DSG structure to generate enhanced scene graphs
 - **Room Classification**: Infers room types based on object composition using rule-based reasoning
+- **Fully Configurable**: External YAML configuration for all parameters (no hardcoding)
 
 ---
 
@@ -57,6 +59,8 @@ The system consists of three main components:
 - `friction_level`: Integer 0-2 (0=low, 1=medium, 2=high)
 - `pushable`: Boolean (whether a mobile robot can push it)
 - `weight_level`: Integer 0-2 (0=light, 1=medium, 2=heavy)
+- `estimated_weight_kg`: String weight range (e.g., "5-10")
+- `inference_confidence`: Integer 0-100 (image quality score)
 
 ### 3. Graph Generator Node (`graph_generator_node`)
 
@@ -169,12 +173,17 @@ roslaunch phy_graph inference.launch debug_save_images:=true
 ```
 phy_graph/
 ├── config/                    # Configuration files
-│   ├── ade20k.yaml           # ADE20K label whitelist
-│   └── uhuman2.yaml          # uHuman2 label whitelist
+│   ├── inference_config.yaml # Main inference configuration
+│   ├── label_spaces/
+│   │   ├── ade20k.yaml       # ADE20K label whitelist
+│   │   └── uhuman2.yaml      # uHuman2 label whitelist
+│   └── room_config.yaml      # Room classification rules
 ├── include/phy_graph/         # C++ headers
 │   ├── physical_inference_node.h
 │   ├── graph_generator.h
-│   └── keyframe_database.h
+│   ├── keyframe_database.h
+│   ├── inference_config.h    # Configuration loader
+│   └── inference_queue.h     # Async inference queue
 ├── launch/                    # ROS launch files
 │   ├── inference.launch       # Main inference launch
 │   ├── dataset.launch        # Dataset-specific launch
@@ -183,9 +192,11 @@ phy_graph/
 │   ├── nodeSub.cpp           # Physical inference node main
 │   ├── imageProcessor.cpp    # Image projection and scoring
 │   ├── keyframe_database.cpp # Keyframe storage
-│   ├── graphGen.cpp          # Graph generator main
-│   ├── scene_graph_builder.cpp  # DSG extraction logic
-│   ├── graph_generator_io.cpp         # JSON I/O
+│   ├── inference_config.cpp  # Configuration loader
+│   ├── inference_queue.cpp   # Async inference queue
+│   ├── graph_generator_node.cpp  # Graph generator main
+│   ├── scene_graph_builder.cpp   # DSG extraction logic
+│   ├── graph_generator_io.cpp    # JSON I/O
 │   └── phy_graph_lib/        # Python library
 │       └── inferenceCore.py  # VLM inference core
 ├── scripts/
@@ -226,18 +237,20 @@ phy_graph/
    - Computes 2D bounding box from projected points
 
 3. **Image Scoring** (`scoreCandidateImages`):
-   - **Visibility Score (40 points)**: Ratio of visible vertices
-     - >80% visible: 40 points
-     - >50% visible: 30 points
+   - **Visibility Score (35 points)**: Ratio of visible vertices
+     - >80% visible: 35 points
+     - >50% visible: 28 points
      - >30% visible: 20 points
      - Otherwise: 10 points
-   - **Coverage Score (30 points)**: Object area / image area
-     - 10-40% coverage: 30 points (ideal)
-     - 5-60% coverage: 20 points
-     - >1% coverage: 10 points
-   - **Position Score (15 points)**: Distance from image center
+   - **Coverage Score (40 points)**: Object area / image area (increased weight)
+     - 10-50% coverage: 40 points (optimal for VLM)
+     - 5-60% coverage: 30 points
+     - >2% coverage: 15 points
+     - Otherwise: 5 points
+   - **Position Score (10 points)**: Distance from image center (reduced weight)
    - **Edge Score (15 points)**: Bonus if object is not near edges
-   - **Total**: 0-100 points, threshold ≥60 for acceptance
+   - **Total**: 0-100 points, threshold ≥60 for acceptance (configurable)
+   - **Minimum Size**: Images smaller than 64x64 pixels are skipped (configurable)
 
 4. **Best Image Selection** (`extractBestObjectImage`):
    - Searches within ±10 seconds of object creation time
@@ -246,12 +259,34 @@ phy_graph/
    - Expands bounding box by 30% padding
    - Extracts and returns cropped image
 
+### Async Inference Queue
+
+The system uses a priority queue for non-blocking inference:
+
+```
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐
+│ DSG Update  │ --> │ Enqueue Task │ --> │ Priority    │
+│ (0.5 Hz)    │     │ (non-block)  │     │ Queue       │
+└─────────────┘     └──────────────┘     └──────┬──────┘
+                                                 │
+                    ┌──────────────┐     ┌──────┴──────┐
+                    │ Save Result  │ <-- │ Worker(s)   │
+                    │ to JSON      │     │ VLM Call    │
+                    └──────────────┘     └─────────────┘
+```
+
+**Benefits**:
+- Main loop never blocks waiting for VLM
+- High-score images processed first
+- Configurable worker count for parallel processing
+
 ### Deferred Inference Logic
 
 To optimize inference quality:
-- **High Quality (Score ≥80)**: Immediate inference
-- **Medium Quality (40-80) & New Object (<5s)**: Wait for better view
-- **Low Quality or Old Object**: Force inference (best effort)
+- **High Quality (Score ≥70)**: Immediate enqueue (configurable)
+- **Medium Quality & New Object (<5s)**: Wait for better view
+- **Timeout Reached**: Force enqueue with current best image
+- **Max Defer Limit (5x)**: Suppress until new observation
 
 ### Physical Property Inference
 
@@ -261,14 +296,16 @@ The VLM prompt requests:
   "description": "Brief textual description",
   "friction_level": 0-2,
   "pushable": 0 or 1,
-  "weight_level": 0-2
+  "weight_level": 0-2,
+  "estimated_weight_kg": "weight range string (e.g., '5-10')"
 }
 ```
 
 The system handles:
 - JSON extraction from markdown code blocks
-- Retry logic (up to 3 attempts)
+- Retry logic (up to 3 attempts, configurable)
 - Error handling and validation
+- Async queue processing (non-blocking)
 
 ### Scene Graph Generation
 
@@ -308,6 +345,8 @@ Each object generates a JSON file: `object_<node_id>_<label>.json`
   "friction_level": 1,
   "pushable": true,
   "weight_level": 1,
+  "estimated_weight_kg": "15-25",
+  "inference_confidence": 78,
   "processing_time_ms": 2980
 }
 ```
@@ -318,6 +357,8 @@ Each object generates a JSON file: `object_<node_id>_<label>.json`
 
 ```json
 {
+  "schema_version": 1,
+  "scene_graph": {
   "timestamp": "2025-09-03_14:04:19",
   "rooms": [
     {
@@ -331,17 +372,22 @@ Each object generates a JSON file: `object_<node_id>_<label>.json`
     {
       "node_id": "O(1)",
       "category": "couch",
-      "position": [1.2, 0.5, 0.0],
-      "bbox_min": [0.8, 0.2, -0.1],
-      "bbox_max": [1.6, 0.8, 0.5],
-      "properties": {
+        "position": {"x": 1.2, "y": 0.5, "z": 0.0},
+        "bounding_box": {
+          "min": {"x": 0.8, "y": 0.2, "z": -0.1},
+          "max": {"x": 1.6, "y": 0.8, "z": 0.5}
+        },
+        "physical_properties": {
         "friction_level": 1,
         "pushable": true,
         "weight_level": 1,
+          "estimated_weight_kg": "15-25",
+          "inference_confidence": 78,
         "description": "A blocky, polygonal black couch."
       }
     }
   ]
+  }
 }
 ```
 
@@ -395,9 +441,62 @@ Images will be saved to `output/<timestamp>/objects/object_<label>.jpg`
 
 ## 🔧 Configuration
 
+### Main Configuration File
+
+All parameters are now externalized in `config/inference_config.yaml`:
+
+```yaml
+# Image processing parameters
+image:
+  min_crop_size: 64          # Skip images smaller than this
+  padding_factor: 0.3        # Bbox expansion ratio
+  score_threshold: 60.0      # Minimum acceptable score
+  high_quality_threshold: 70.0  # Immediate inference threshold
+
+# Keyframe database parameters
+keyframe:
+  max_memory_frames: 3000    # Frames in RAM
+  min_translation: 0.2       # Minimum movement (m)
+  min_rotation: 0.1          # Minimum rotation (rad)
+  time_window: 10.0          # Image search window (s)
+
+# Inference queue parameters
+inference:
+  num_workers: 1             # Parallel workers (1 = serial)
+  max_queue_size: 100        # Maximum queue length
+  max_defer_count: 5         # Max defer before suppression
+  wait_timeout: 5.0          # Timeout for better view (s)
+  loop_rate: 0.5             # Main loop frequency (Hz)
+
+# VLM service parameters
+vlm:
+  model_name: "openai/gpt-4o-mini"
+  max_retries: 3
+  dry_run: false             # Set true to skip API calls
+
+# Debug parameters
+debug:
+  save_images: false
+  verbose: false
+```
+
+### Dry-Run Mode
+
+For testing without VLM API calls:
+```bash
+# Edit config/inference_config.yaml
+vlm:
+  dry_run: true
+```
+
+Or override via rosparam:
+```bash
+rosparam set /phy_graph_node/inference/vlm/dry_run true
+```
+
 ### Label Whitelist
 
-Edit `config/ade20k.yaml` or `config/uhuman2.yaml` to specify which object labels to process:
+Edit `config/label_spaces/ade20k.yaml` or `config/label_spaces/uhuman2.yaml`:
 
 ```yaml
 object_labels:
@@ -405,28 +504,6 @@ object_labels:
   - 6
   - 7
 ```
-
-### Keyframe Database Parameters
-
-Modify in `nodeSub.cpp`:
-- `max_memory_frames`: 3000 (frames in RAM)
-- `min_translation`: 0.2m
-- `min_rotation`: 0.1 rad
-- `min_time_interval`: 0.2s
-
-### VLM Model Selection
-
-Edit `scripts/module.py`:
-```python
-model_name="openai/gpt-4o-mini"  # Change to "gpt-4o" for better quality
-```
-
-### Image Quality Thresholds
-
-Modify in `imageProcessor.cpp`:
-- `HIGH_QUALITY_THRESHOLD`: 80.0
-- `WAIT_TIMEOUT_SECONDS`: 5.0
-- Minimum score for acceptance: 60.0
 
 ---
 
@@ -487,6 +564,7 @@ string description
 int8 friction_level
 bool pushable
 int8 weight_level
+string estimated_weight_kg
 ```
 
 ### ROS Parameters
@@ -507,6 +585,11 @@ Hydra DSG → phy_graph_node → KeyframeDatabase
     3D Mesh Projection → Image Scoring
                 ↓
          Best Image Selection
+                ↓
+    ┌─────────────────────────────┐
+    │  Async Inference Queue      │  ← Non-blocking
+    │  (Priority: score > size)   │
+    └─────────────────────────────┘
                 ↓
     VLM Service (Python) → OpenAI API
                 ↓

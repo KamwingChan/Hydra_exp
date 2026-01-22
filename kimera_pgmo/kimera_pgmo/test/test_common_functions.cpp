@@ -162,10 +162,10 @@ TEST(TestCommonFunctions, combineMeshesIndices) {
 TEST(TestCommonFunctions, polygonEquality) {
   pcl::Vertices poly_1, poly_2, poly_3, poly_4;
 
-  poly_1.vertices = {0, 1, 2};
-  poly_2.vertices = {2, 0, 1};
-  poly_3.vertices = {1, 0, 2};
-  poly_4.vertices = {3, 4, 5};
+  poly_1.vertices = std::vector<uint32_t>{0, 1, 2};
+  poly_2.vertices = std::vector<uint32_t>{2, 0, 1};
+  poly_3.vertices = std::vector<uint32_t>{1, 0, 2};
+  poly_4.vertices = std::vector<uint32_t>{3, 4, 5};
 
   EXPECT_TRUE(PolygonsEqual(poly_1, poly_1));
   EXPECT_TRUE(PolygonsEqual(poly_1, poly_2));
@@ -178,10 +178,10 @@ TEST(TestCommonFunctions, meshSurfaceExist) {
   std::map<size_t, std::vector<size_t> > adj_surfaces;
 
   pcl::Vertices poly_1, poly_2, poly_3, poly_4;
-  poly_1.vertices = {0, 1, 2};
-  poly_2.vertices = {0, 2, 3};
-  poly_3.vertices = {0, 5, 1};
-  poly_4.vertices = {1, 4, 2};
+  poly_1.vertices = std::vector<uint32_t>{0, 1, 2};
+  poly_2.vertices = std::vector<uint32_t>{0, 2, 3};
+  poly_3.vertices = std::vector<uint32_t>{0, 5, 1};
+  poly_4.vertices = std::vector<uint32_t>{1, 4, 2};
   std::vector<pcl::Vertices> surfaces{poly_1, poly_2, poly_3, poly_4};
 
   adj_surfaces[0] = std::vector<size_t>{0, 1};

@@ -6,7 +6,9 @@
     <arg name="rgb_topic" default="/tesse/left_cam/rgb/image_raw" />
     <arg name="camera_info_topic" default="/tesse/left_cam/camera_info" />
     <arg name="mesh_topic" default="/hydra_dsg_visualizer/dsg_mesh" />
-    <arg name="debug_save_images" default="false" />
+    <arg name="debug_save_images" default="true" />
+    <!-- Inference configuration file -->
+    <arg name="inference_config" default="$(find phy_graph)/config/inference_config.yaml" />
     <!-- Start the Python service for physical property inference -->
     <node name="phy_graph_server"
           pkg="phy_graph"
@@ -23,6 +25,7 @@
         <remap from="input_mesh" to="$(arg mesh_topic)" />
         <remap from="rgb_image" to="$(arg rgb_topic)" />
         <remap from="camera_info" to="$(arg camera_info_topic)" />
+        <rosparam command="load" file="$(arg inference_config)" ns="inference" />
         <!-- Load parameters into the node's private namespace -->
         <rosparam command="load" file="$(find phy_graph)/config/label_spaces/$(arg label_space).yaml" />
         <param name="label_space" value="$(arg label_space)" />

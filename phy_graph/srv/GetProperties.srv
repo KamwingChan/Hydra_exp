@@ -7,3 +7,4 @@ string description
 int8 friction_level
 bool pushable
 int8 weight_level
+string estimated_weight_kg

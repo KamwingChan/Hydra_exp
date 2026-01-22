@@ -112,12 +112,12 @@ UpdateFunctor::Hooks Update2dPlacesFunctor::hooks() const {
   return my_hooks;
 }
 
-void Update2dPlacesFunctor::call(const DynamicSceneGraph& unmerged,
-                                 SharedDsgInfo& dsg,
-                                 const UpdateInfo::ConstPtr& info) const {
+MergeList Update2dPlacesFunctor::call(const DynamicSceneGraph& unmerged,
+                                      SharedDsgInfo& dsg,
+                                      const UpdateInfo::ConstPtr& info) const {
   ScopedTimer spin_timer("backend/update_2d_places", info->timestamp_ns);
   if (!unmerged.hasLayer(layer_id_)) {
-    return;
+    return {};
   }
 
   const auto& layer = unmerged.getLayer(layer_id_);
@@ -137,6 +137,7 @@ void Update2dPlacesFunctor::call(const DynamicSceneGraph& unmerged,
   }
 
   VLOG(5) << "[Hydra Backend] 2D Place update: " << num_changed << " node(s)";
+  return {};
 }
 
 MergeList Update2dPlacesFunctor::findMerges(const DynamicSceneGraph& graph,

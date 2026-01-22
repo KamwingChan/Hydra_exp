@@ -191,7 +191,7 @@ class MeshTrajectoryDeformer : public KimeraPgmoInterface {
     }
 
     deformation_graph_->removePriorsWithPrefix(GetRobotPrefix(inputs.robot_id));
-    deformation_graph_->processNodeMeasurements(node_estimates, config_.prior_variance);
+    deformation_graph_->addNodeMeasurements(node_estimates, config_.prior_variance);
 
     SPARK_LOG(INFO) << "Optimizing full mesh...";
     std::vector<int> indices;

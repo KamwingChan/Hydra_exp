@@ -27,11 +27,6 @@ namespace kimera_pgmo {
 using MeasurementVector = std::vector<std::pair<gtsam::Key, gtsam::Pose3>>;
 using RobotTimestampMap = std::map<size_t, std::vector<Timestamp>>;
 using pose_graph_tools::PoseGraph;
-using pose_graph_tools::PoseGraphEdge;
-using pose_graph_tools::PoseGraphNode;
-using PoseBetween = gtsam::BetweenFactor<gtsam::Pose3>;
-using PosePrior = gtsam::PriorFactor<gtsam::Pose3>;
-using EdgeType = pose_graph_tools::PoseGraphEdge::Type;
 
 DeformationGraph::DeformationGraph()
     : verbose_(true),
@@ -48,183 +43,96 @@ bool DeformationGraph::initialize(const KimeraRPGO::RobustSolverParams& params) 
   return true;
 }
 
-void DeformationGraph::processPoseGraph(const pose_graph_tools::PoseGraph& pose_graph,
-                                        const EdgeTypeVarianceMap& variance_map,
-                                        std::map<size_t, size_t> robot_id_remap) {
-  for (const auto& node : pose_graph.nodes) {
-    auto node_robot_id = getRemappedId(robot_id_remap, node.robot_id);
-    auto node_key = gtsam::Symbol(robot_id_to_prefix.at(node_robot_id), node.key);
-    gtsam::Pose3 node_pose(node.pose.matrix());
-    addNewNode(node_key, node_pose);
-    // Note that the pose here directly updates the pg initial pose. Which matters for
-    // the processNodeValence function (connecting node to vertex) but does not matter
-    // as much if the node to vertex edges will be directly given
-  }
-  for (const auto& edge : pose_graph.edges) {
-    if (!variance_map.count(edge.type)) {
-      SPARK_LOG(ERROR) << "Missing edge type " << edge.type
-                       << " for variance map in processPoseGraph";
-      continue;
-    }
-    auto from_robot = getRemappedId(robot_id_remap, edge.robot_from);
-    auto to_robot = getRemappedId(robot_id_remap, edge.robot_to);
-
-    auto from_key = gtsam::Symbol(robot_id_to_prefix.at(from_robot), edge.key_from);
-    auto to_key = gtsam::Symbol(robot_id_to_prefix.at(to_robot), edge.key_to);
-    gtsam::Pose3 from_T_to(edge.pose.matrix());
-    if (from_key != to_key) {
-      addNewBetween(from_key, to_key, from_T_to, variance_map.at(edge.type));
-    } else {
-      addPrior(from_key, from_T_to, variance_map.at(edge.type));
-    }
-  }
+void DeformationGraph::addNodeValenceEdge(const gtsam::Key& key,
+                                          const gtsam::Key& valence_key,
+                                          const gtsam::Pose3& node_pose,
+                                          const gtsam::Point3& valence_position,
+                                          double variance) {
+  static const gtsam::SharedNoiseModel& noise =
+      gtsam::noiseModel::Isotropic::Variance(3, variance);
+  const DeformationEdgeFactor new_edge(
+      key, valence_key, node_pose, valence_position, noise);
+  consistency_factors_.add(new_edge);
+  new_factors_.add(new_edge);
 }
 
-void DeformationGraph::processMeshGraph(const pose_graph_tools::PoseGraph& mesh_graph,
-                                        const EdgeTypeVarianceMap& variance_map,
-                                        std::map<size_t, size_t> robot_id_remap) {
-  for (const auto& node : mesh_graph.nodes) {
-    auto node_robot_id = getRemappedId(robot_id_remap, node.robot_id);
-    auto node_key =
-        gtsam::Symbol(robot_id_to_vertex_prefix.at(node_robot_id), node.key);
-    gtsam::Pose3 node_pose(node.pose.matrix());
-    addNewMeshNode(node_key, node_pose, node.stamp_ns);
-    // Note that the node_pose here directly updates the initial vertex positions. Which
-    // matters for the processNodeValence function (connecting node to vertex) but does
-    // not matter as much if the node to vertex edges will be directly given. The
-    // node_stamp also effects deformation (start index: see deformPoints function)
-  }
-  for (const auto& edge : mesh_graph.edges) {
-    if (!variance_map.count(edge.type)) {
-      SPARK_LOG(ERROR) << "Missing edge type " << edge.type
-                       << " for variance map in processMeshGraph";
-      continue;
-    }
-    gtsam::Key from_key, to_key;
-    auto from_robot = getRemappedId(robot_id_remap, edge.robot_from);
-    auto to_robot = getRemappedId(robot_id_remap, edge.robot_to);
-    if (edge.type == EdgeType::MESH) {
-      from_key = gtsam::Symbol(robot_id_to_vertex_prefix.at(from_robot), edge.key_from);
-      to_key = gtsam::Symbol(robot_id_to_vertex_prefix.at(to_robot), edge.key_to);
-    } else if (edge.type == EdgeType::POSE_MESH) {
-      from_key = gtsam::Symbol(robot_id_to_prefix.at(from_robot), edge.key_from);
-      to_key = gtsam::Symbol(robot_id_to_vertex_prefix.at(to_robot), edge.key_to);
-    } else if (edge.type == EdgeType::MESH_POSE) {
-      from_key = gtsam::Symbol(robot_id_to_vertex_prefix.at(from_robot), edge.key_from);
-      to_key = gtsam::Symbol(robot_id_to_prefix.at(to_robot), edge.key_to);
-    } else {
-      SPARK_LOG(ERROR) << "Unhandled edge type in processMeshGraph";
-      continue;
-    }
-
-    gtsam::Pose3 from_T_to(edge.pose.matrix());
-    addDeformationEdge(
-        from_key, to_key, from_T_to.translation(), variance_map.at(edge.type));
-  }
-}
-
-void DeformationGraph::processNodeValence(const gtsam::Key& key,
-                                          const Vertices& valences,
-                                          const char& valence_prefix,
-                                          double variance,
-                                          bool temp) {
+void DeformationGraph::addNodeValence(const gtsam::Key& key,
+                                      const Vertices& valences,
+                                      const char& valence_prefix,
+                                      double variance) {
   const char& prefix = gtsam::Symbol(key).chr();
   const size_t& idx = gtsam::Symbol(key).index();
   // Add the consistency factors
   for (Vertex v : valences) {
     const gtsam::Symbol vertex(valence_prefix, v);
-    if (!values_.exists(vertex) && !new_values_.exists(vertex) &&
-        !new_temp_values_.exists(vertex)) {
+    if (!values_.exists(vertex) && !new_values_.exists(vertex)) {
       continue;
     }
-    bool non_temp_node =
-        pg_initial_poses_.count(prefix) && pg_initial_poses_[prefix].size() > idx;
-    const auto node_pose = non_temp_node ? pg_initial_poses_[prefix].at(idx)
-                                         : temp_pg_initial_poses_.at(key);
+    const gtsam::Pose3& node_pose = pg_initial_poses_[prefix].at(idx);
     const gtsam::Pose3 vertex_pose(gtsam::Rot3(),
                                    vertex_positions_[valence_prefix].at(v));
 
-    addDeformationEdge(
-        key, vertex, node_pose, vertex_pose.translation(), variance, temp);
-    addDeformationEdge(
-        vertex, key, vertex_pose, node_pose.translation(), variance, temp);
+    // Define noise. Hardcoded for now
+    static const gtsam::SharedNoiseModel& noise =
+        gtsam::noiseModel::Isotropic::Variance(3, variance);
+    // Create deformation edge factor
+    const DeformationEdgeFactor new_edge_1(
+        key, vertex, node_pose, vertex_pose.translation(), noise);
+    const DeformationEdgeFactor new_edge_2(
+        vertex, key, vertex_pose, node_pose.translation(), noise);
+    consistency_factors_.add(new_edge_1);
+    consistency_factors_.add(new_edge_2);
+    new_factors_.add(new_edge_1);
+    new_factors_.add(new_edge_2);
   }
 }
 
-void DeformationGraph::processPointMeasurement(const gtsam::Key& from_key,
-                                               const gtsam::Key& to_key,
-                                               const gtsam::Pose3& from_pose,
-                                               const gtsam::Point3& to_point,
-                                               double variance,
-                                               bool temp) {
-  if (!values_.exists(to_key) && !new_values_.exists(to_key) &&
-      !new_temp_values_.exists(to_key)) {
-    if (temp) {
-      new_temp_values_.insert(to_key, gtsam::Pose3(gtsam::Rot3(), to_point));
-    } else {
-      new_values_.insert(to_key, gtsam::Pose3(gtsam::Rot3(), to_point));
-    }
-  }
+void DeformationGraph::addTempNodeValence(const gtsam::Key& key,
+                                          const Vertices& valences,
+                                          const char& valence_prefix,
+                                          double variance) {
+  gtsam::NonlinearFactorGraph new_factors;
+  gtsam::Values new_values;
+  // Add the consistency factors
+  for (Vertex v : valences) {
+    const gtsam::Symbol vertex(valence_prefix, v);
+    if (!values_.exists(vertex) and !new_values_.exists(vertex)) continue;
 
-  addDeformationEdge(from_key, to_key, from_pose, to_point, variance, temp);
-}
+    const gtsam::Pose3& node_pose = temp_pg_initial_poses_.at(key);
+    const gtsam::Pose3 vertex_pose(gtsam::Rot3(),
+                                   vertex_positions_[valence_prefix].at(v));
 
-void DeformationGraph::addDeformationEdge(const gtsam::Key& from_key,
-                                          const gtsam::Key& to_key,
-                                          const gtsam::Pose3& from_pose,
-                                          const gtsam::Point3& to_point,
-                                          double variance,
-                                          bool temp) {
-  // Define noise. Hardcoded for now
-  static const gtsam::SharedNoiseModel& noise =
-      gtsam::noiseModel::Isotropic::Variance(3, variance);
-  // Create deformation edge factor
-  const DeformationEdgeFactor new_edge(from_key, to_key, from_pose, to_point, noise);
-  if (temp) {
-    new_temp_factors_.add(new_edge);
-    return;
+    // Define noise. Hardcoded for now
+    static const gtsam::SharedNoiseModel& noise =
+        gtsam::noiseModel::Isotropic::Variance(3, variance);
+    // Create deformation edge factor
+    const DeformationEdgeFactor new_edge_1(
+        key, vertex, node_pose, vertex_pose.translation(), noise);
+    const DeformationEdgeFactor new_edge_2(
+        vertex, key, vertex_pose, node_pose.translation(), noise);
+    new_factors.add(new_edge_1);
+    new_factors.add(new_edge_2);
   }
-  consistency_factors_.add(new_edge);
-  new_factors_.add(new_edge);
-}
-
-void DeformationGraph::addDeformationEdge(const gtsam::Key& from_key,
-                                          const gtsam::Key& to_key,
-                                          const gtsam::Point3& measurement,
-                                          double variance,
-                                          bool temp) {
-  // Define noise. Hardcoded for now
-  static const gtsam::SharedNoiseModel& noise =
-      gtsam::noiseModel::Isotropic::Variance(3, variance);
-  // Create deformation edge factor
-  const DeformationEdgeFactor new_edge(from_key, to_key, measurement, noise);
-  if (temp) {
-    new_temp_factors_.add(new_edge);
-    return;
-  }
-  consistency_factors_.add(new_edge);
-  new_factors_.add(new_edge);
+  pgo_->updateTempFactorsValues(new_factors, new_values);
+  temp_nfg_ = pgo_->getTempFactorsUnsafe();
+  temp_values_ = pgo_->getTempValues();
 }
 
 void DeformationGraph::addPrior(const gtsam::Key& key,
                                 const gtsam::Pose3& pose,
                                 double variance,
-                                bool temp) {
+                                double rotation_factor) {
   gtsam::Vector6 variances;
-  variances.head<3>().setConstant(1e-02 * variance);
+  variances.head<3>().setConstant(rotation_factor * variance);
   variances.tail<3>().setConstant(variance);
   const auto noise = gtsam::noiseModel::Diagonal::Variances(variances);
 
   gtsam::PriorFactor<gtsam::Pose3> measurement(key, pose, noise);
-  if (temp) {
-    new_temp_factors_.add(measurement);
-  } else {
-    new_factors_.add(measurement);
-  }
+  new_factors_.add(measurement);
 }
 
-void DeformationGraph::processNodeMeasurements(const MeasurementVector& measurements,
-                                               double variance) {
+void DeformationGraph::addNodeMeasurements(const MeasurementVector& measurements,
+                                           double variance) {
   for (auto&& [key, pose] : measurements) {
     if (!values_.exists(key)) {
       if (!new_values_.exists(key)) {
@@ -243,23 +151,24 @@ void DeformationGraph::processNodeMeasurements(const MeasurementVector& measurem
   }
 }
 
-void DeformationGraph::processNewBetween(const gtsam::Key& key_from,
-                                         const gtsam::Key& key_to,
-                                         const gtsam::Pose3& meas,
-                                         double variance) {
-  if (!checkNewBetween(key_from, key_to)) {
-    return;
-  }
-
-  addNewBetween(key_from, key_to, meas, variance);
-
-  if (key_to == key_from + 1) {
-    updatePoseGraphInitialGuess(key_from, key_to, meas);
-  }
+void DeformationGraph::addGraphNodeMeasurement(char prefix,
+                                               size_t index,
+                                               const gtsam::Pose3& pose,
+                                               double variance) {
+  addPrior(gtsam::Symbol(prefix, index), pose, variance);
 }
 
-bool DeformationGraph::checkNewBetween(const gtsam::Key& key_from,
-                                       const gtsam::Key& key_to) {
+void DeformationGraph::addNodeMeasurement(const gtsam::Key& key,
+                                          const gtsam::Pose3& pose,
+                                          double variance) {
+  addPrior(key, pose, variance);
+}
+
+void DeformationGraph::addNewBetween(const gtsam::Key& key_from,
+                                     const gtsam::Key& key_to,
+                                     const gtsam::Pose3& meas,
+                                     const gtsam::Pose3& initial_pose,
+                                     double variance) {
   const char& from_prefix = gtsam::Symbol(key_from).chr();
   const char& to_prefix = gtsam::Symbol(key_to).chr();
   const size_t& from_idx = gtsam::Symbol(key_from).index();
@@ -268,50 +177,34 @@ bool DeformationGraph::checkNewBetween(const gtsam::Key& key_from,
   if (from_idx >= pg_initial_poses_[from_prefix].size()) {
     SPARK_LOG(ERROR)
         << "DeformationGraph: when adding new between from key should already exist.";
-    return false;
+    return;
   }
 
   if (to_idx > pg_initial_poses_[to_prefix].size()) {
     SPARK_LOG(ERROR) << "DeformationGraph: skipping keys in addNewBetween.";
-    return false;
+    return;
+  } else if (to_idx == pg_initial_poses_[to_prefix].size()) {
+    // new node
+    // For now push empty valence, valences will be populated when updated
+    Vertices valences;
+    pg_initial_poses_[to_prefix].push_back(initial_pose);
+
+    gtsam::Pose3 initial_estimate = initial_pose;
+    if (to_idx > 0) {
+      if (values_.exists(key_from)) {
+        initial_estimate = values_.at<gtsam::Pose3>(key_from).compose(meas);
+      } else if (new_values_.exists(key_from)) {
+        initial_estimate = new_values_.at<gtsam::Pose3>(key_from).compose(meas);
+      }
+    }
+    new_values_.insert(key_to, initial_estimate);
   }
 
-  return true;
-}
-
-void DeformationGraph::updatePoseGraphInitialGuess(const gtsam::Key& key_from,
-                                                   const gtsam::Key& key_to,
-                                                   const gtsam::Pose3& meas) {
-  const char& to_prefix = gtsam::Symbol(key_to).chr();
-  gtsam::Pose3 initial_estimate;
-  gtsam::Pose3 init_pose;
-  if (values_.exists(key_from)) {
-    initial_estimate = values_.at<gtsam::Pose3>(key_from).compose(meas);
-  } else if (new_values_.exists(key_from)) {
-    initial_estimate = new_values_.at<gtsam::Pose3>(key_from).compose(meas);
-  } else {
-    SPARK_LOG(FATAL) << "Missing from key values when adding initial guess.";
-  }
-  new_values_.insert(key_to, initial_estimate);
-  init_pose = pg_initial_poses_[to_prefix].back().compose(meas);
-  pg_initial_poses_[to_prefix].push_back(init_pose);
-}
-
-void DeformationGraph::addNewBetween(const gtsam::Key& key_from,
-                                     const gtsam::Key& key_to,
-                                     const gtsam::Pose3& meas,
-                                     double variance,
-                                     bool temp) {
   gtsam::Vector6 variances;
   variances.head<3>().setConstant(1e-02 * variance);
   variances.tail<3>().setConstant(variance);
   static const gtsam::SharedNoiseModel& noise =
       gtsam::noiseModel::Diagonal::Variances(variances);
-  if (temp) {
-    new_temp_factors_.add(
-        gtsam::BetweenFactor<gtsam::Pose3>(key_from, key_to, meas, noise));
-    return;
-  }
   new_factors_.add(gtsam::BetweenFactor<gtsam::Pose3>(key_from, key_to, meas, noise));
 
   // if it's a loop closure factor
@@ -319,94 +212,86 @@ void DeformationGraph::addNewBetween(const gtsam::Key& key_from,
     SPARK_LOG(INFO) << "DeformationGraph: Added loop closure";
     recalculate_vertices_ = true;
   }
-}
-
-void DeformationGraph::processNewTempBetween(const gtsam::Key& key_from,
-                                             const gtsam::Key& key_to,
-                                             const gtsam::Pose3& meas,
-                                             double variance) {
-  if (!checkNewTempBetween(key_from, key_to)) {
-    return;
-  }
-
-  addNewBetween(key_from, key_to, meas, variance, true);
-}
-
-bool DeformationGraph::checkNewTempBetween(const gtsam::Key& key_from,
-                                           const gtsam::Key& key_to) {
-  if (!values_.exists(key_from) && !new_values_.exists(key_from) &&
-      !new_temp_values_.exists(key_from)) {
-    SPARK_LOG(ERROR) << "Key does not exist when adding temporary between factor";
-    return false;
-  }
-
-  if (!values_.exists(key_to) && !new_values_.exists(key_to) &&
-      !new_temp_values_.exists(key_to)) {
-    SPARK_LOG(ERROR) << "Key does not exist when adding temporary between factor";
-    return false;
-  }
-
-  return true;
-}
-
-void DeformationGraph::processNewTempEdges(const PoseGraph& edges, double variance) {
-  for (const auto& e : edges.edges) {
-    if (!checkNewTempBetween(e.key_from, e.key_to)) {
-      continue;
-    }
-    addNewBetween(e.key_from, e.key_to, gtsam::Pose3(e.pose.matrix()), variance, true);
-  }
   return;
 }
 
-bool DeformationGraph::addNewMeshNode(const gtsam::Key& node_key,
-                                      const gtsam::Pose3& node_pose,
-                                      const Timestamp& node_stamp) {
-  char node_prefix = gtsam::Symbol(node_key).chr();
-  size_t node_idx = gtsam::Symbol(node_key).index();
-  if (!vertex_positions_.count(node_prefix)) {
-    vertex_positions_[node_prefix] = std::vector<gtsam::Point3>();
-    vertex_stamps_[node_prefix] = std::vector<Timestamp>();
+void DeformationGraph::addNewTempBetween(const gtsam::Key& key_from,
+                                         const gtsam::Key& key_to,
+                                         const gtsam::Pose3& meas,
+                                         const gtsam::Pose3& initial_pose,
+                                         double variance) {
+  gtsam::Values new_values;
+  gtsam::NonlinearFactorGraph new_factors;
+  if (!values_.exists(key_from) && !new_values_.exists(key_from) &&
+      !temp_values_.exists(key_from)) {
+    SPARK_LOG(ERROR) << "Key does not exist when adding temporary between factor";
+    return;
   }
-  if (node_idx != vertex_positions_.at(node_prefix).size()) {
-    return false;
+
+  if (!values_.exists(key_to) && !new_values_.exists(key_to) &&
+      !temp_values_.exists(key_to)) {
+    SPARK_LOG(ERROR) << "Key does not exist when adding temporary between factor";
+    return;
   }
-  vertex_positions_[node_prefix].push_back(node_pose.translation());
-  vertex_stamps_[node_prefix].push_back(node_stamp);
-  new_values_.insert(node_key, node_pose);
-  return true;
+
+  // Note that unlike the typical addNewBetween, this one only adds the
+  // temporary between factors without any values
+  gtsam::Vector6 variances;
+  variances.head<3>().setConstant(1e-02 * variance);
+  variances.tail<3>().setConstant(variance);
+  static const gtsam::SharedNoiseModel& noise =
+      gtsam::noiseModel::Diagonal::Variances(variances);
+  new_factors.add(gtsam::BetweenFactor<gtsam::Pose3>(key_from, key_to, meas, noise));
+
+  pgo_->updateTempFactorsValues(new_factors, new_values);
+  temp_nfg_ = pgo_->getTempFactorsUnsafe();
+  temp_values_ = pgo_->getTempValues();
+  return;
 }
 
-bool DeformationGraph::checkNewMeshNode(const gtsam::Key& node_key) {
-  char node_prefix = gtsam::Symbol(node_key).chr();
-  size_t node_idx = gtsam::Symbol(node_key).index();
+// TODO(yun) add unittest
+void DeformationGraph::addNewTempEdges(const PoseGraph& edges,
+                                       double variance,
+                                       bool rotations_known) {
+  gtsam::Values new_values;
+  gtsam::NonlinearFactorGraph new_factors;
 
-  if (!vertex_positions_.count(node_prefix)) {
-    if (node_idx == 0) {
-      return true;
+  gtsam::Vector6 variances;
+  if (rotations_known) {
+    variances.head<3>().setConstant(1e-02 * variance);
+  } else {
+    variances.head<3>().setConstant(1e+08);
+  }
+  variances.tail<3>().setConstant(variance);
+  static const gtsam::SharedNoiseModel& noise =
+      gtsam::noiseModel::Diagonal::Variances(variances);
+
+  for (const auto& e : edges.edges) {
+    if (!values_.exists(e.key_from) && !new_values_.exists(e.key_from) &&
+        !temp_values_.exists(e.key_from)) {
+      SPARK_LOG(ERROR) << "Key does not exist when adding temporary between factor";
+      continue;
     }
-    return false;
+
+    if (!values_.exists(e.key_to) && !new_values_.exists(e.key_to) &&
+        !temp_values_.exists(e.key_to)) {
+      SPARK_LOG(ERROR) << "Key does not exist when adding temporary between factor";
+      continue;
+    }
+
+    new_factors.add(gtsam::BetweenFactor<gtsam::Pose3>(
+        e.key_from, e.key_to, gtsam::Pose3(e.pose.matrix()), noise));
   }
-  // The check here returns true even for duplicated (added) nodes
-  // Only return false if there is a likely message drop
-  return node_idx <= vertex_positions_.at(node_prefix).size();
+
+  // Note that unlike the typical addNewBetween, this one only adds the
+  // temporary between factors without any values
+  pgo_->updateTempFactorsValues(new_factors, new_values);
+  temp_nfg_ = pgo_->getTempFactorsUnsafe();
+  temp_values_ = pgo_->getTempValues();
+  return;
 }
 
-bool DeformationGraph::checkNewMeshEdge(const gtsam::Key& from, const gtsam::Key& to) {
-  const gtsam::Symbol from_symb(from);
-  const gtsam::Symbol to_symb(to);
-  if (from_symb.index() >= vertex_positions_.at(from_symb.chr()).size() ||
-      to_symb.index() >= vertex_positions_.at(to_symb.chr()).size()) {
-    return false;
-  }
-  if ((!values_.exists(from) && !new_values_.exists(from)) ||
-      (!values_.exists(to) && !new_values_.exists(to))) {
-    return false;
-  }
-  return true;
-}
-
-void DeformationGraph::processNewMeshEdgesAndNodes(
+void DeformationGraph::addNewMeshEdgesAndNodes(
     const std::vector<std::pair<gtsam::Key, gtsam::Key>>& mesh_edges,
     const gtsam::Values& mesh_nodes,
     const std::unordered_map<gtsam::Key, Timestamp>& node_stamps,
@@ -414,102 +299,192 @@ void DeformationGraph::processNewMeshEdgesAndNodes(
     std::vector<Timestamp>* added_index_stamps,
     double variance) {
   assert(node_stamps.size() == mesh_nodes.size());
-
+  // New mesh edge factors
+  gtsam::NonlinearFactorGraph new_mesh_factors;
+  // New mesh node factors
+  gtsam::Values new_mesh_nodes;
   // Iterate and add the new mesh nodes not yet in graph
   // Note that the keys are in increasing order by construction from gtsam
-  // Also note that with Hydra we often get duplicates (nodes that have already been
-  // added before)
-  for (const auto& node_key : mesh_nodes.keys()) {
-    if (!checkNewMeshNode(node_key)) {
-      SPARK_LOG(FATAL) << "Error adding new mesh node.";
-    }
-
-    const gtsam::Pose3& node_pose = mesh_nodes.at<gtsam::Pose3>(node_key);
-
-    if (addNewMeshNode(node_key, node_pose, node_stamps.at(node_key))) {
-      added_indices->push_back(gtsam::Symbol(node_key).index());
-      added_index_stamps->push_back(node_stamps.at(node_key));
+  for (auto k : mesh_nodes.keys()) {
+    char node_prefix = gtsam::Symbol(k).chr();
+    size_t node_idx = gtsam::Symbol(k).index();
+    const gtsam::Pose3& node_pose = mesh_nodes.at<gtsam::Pose3>(k);
+    try {
+      if (node_idx > vertex_positions_.at(node_prefix).size()) {
+        SPARK_LOG(ERROR)
+            << "Adding new mesh edges and nodes: node index does not match index "
+               "in vertex position vector. Likely to have dropped packets from "
+               "frontend"
+            << node_idx << " vs. " << vertex_positions_.at(node_prefix).size();
+        while (vertex_positions_.at(node_prefix).size() < node_idx) {
+          // Place at inifinity to ignore
+          vertex_positions_[node_prefix].push_back(gtsam::Point3(0, 0, 0));
+          vertex_stamps_[node_prefix].push_back(node_stamps.at(k));
+        }
+      }
+      if (node_idx == vertex_positions_.at(node_prefix).size()) {
+        // Only add nodes that has not previously been added
+        vertex_positions_[node_prefix].push_back(node_pose.translation());
+        vertex_stamps_[node_prefix].push_back(node_stamps.at(k));
+        new_mesh_nodes.insert(k, node_pose);
+        added_indices->push_back(node_idx);
+        added_index_stamps->push_back(node_stamps.at(k));
+      }
+    } catch (const std::out_of_range& e) {
+      if (verbose_) {
+        SPARK_LOG(INFO) << "New prefix " << node_prefix
+                        << " detected when adding new mesh edges and nodes";
+      }
+      vertex_positions_[node_prefix] = std::vector<gtsam::Point3>();
+      vertex_stamps_[node_prefix] = std::vector<Timestamp>();
+      vertex_positions_[node_prefix].push_back(node_pose.translation());
+      vertex_stamps_[node_prefix].push_back(node_stamps.at(k));
+      new_mesh_nodes.insert(k, node_pose);
+      added_indices->push_back(node_idx);
+      added_index_stamps->push_back(node_stamps.at(k));
     }
   }
 
+  // Define noise. Hardcoded for now
+  static const gtsam::SharedNoiseModel& edge_noise =
+      gtsam::noiseModel::Isotropic::Variance(3, variance);
   // Iterate and add the new edges
   for (auto e : mesh_edges) {
-    if (!checkNewMeshEdge(e.first, e.second)) {
-      SPARK_LOG(FATAL) << "Error adding new mesh edge.";
-    }
-    const gtsam::Pose3& pose_from = mesh_nodes.at<gtsam::Pose3>(e.first);
-    const gtsam::Point3& point_to = mesh_nodes.at<gtsam::Pose3>(e.second).translation();
-
-    addDeformationEdge(e.first, e.second, pose_from, point_to, variance);
+    const gtsam::Symbol& from = gtsam::Symbol(e.first);
+    const gtsam::Symbol& to = gtsam::Symbol(e.second);
+    if (from.index() >= vertex_positions_.at(from.chr()).size() ||
+        to.index() >= vertex_positions_.at(to.chr()).size())
+      continue;
+    if ((!values_.exists(from) && !new_values_.exists(from) &&
+         !new_mesh_nodes.exists(from)) ||
+        (!values_.exists(to) && !new_values_.exists(to) && !new_mesh_nodes.exists(to)))
+      continue;
+    const gtsam::Pose3& pose_from = mesh_nodes.at<gtsam::Pose3>(from);
+    const gtsam::Pose3& pose_to = mesh_nodes.at<gtsam::Pose3>(to);
+    // Create new edge as deformation edge factor
+    const DeformationEdgeFactor new_edge(
+        from, to, pose_from, pose_to.translation(), edge_noise);
+    new_mesh_factors.add(new_edge);
+    consistency_factors_.add(new_edge);
   }
-}
 
-void DeformationGraph::processNewNode(const gtsam::Key& key,
-                                      const gtsam::Pose3& initial_pose,
-                                      bool add_prior,
-                                      double prior_variance) {
-  if (!checkNewNode(key)) {
-    SPARK_LOG(FATAL) << "processNewNode failed check.";
-  }
-
-  addNewNode(key, initial_pose);
-
-  if (add_prior) {
-    addPrior(key, initial_pose, prior_variance);
-  }
-}
-
-bool DeformationGraph::checkNewNode(const gtsam::Key& key) {
-  const char& prefix = gtsam::Symbol(key).chr();
-  const size_t& idx = gtsam::Symbol(key).index();
-  if (idx > 0) {
-    if (idx != pg_initial_poses_[prefix].size()) {
-      SPARK_LOG(ERROR) << "DeformationGraph: Nodes skipped in pose graph nodes";
-      return false;
-    }
-  }
-  return true;
+  new_factors_.add(new_mesh_factors);
+  new_values_.insert(new_mesh_nodes);
 }
 
 void DeformationGraph::addNewNode(const gtsam::Key& key,
-                                  const gtsam::Pose3& initial_pose) {
+                                  const gtsam::Pose3& initial_pose,
+                                  bool add_prior,
+                                  double prior_variance) {
+  Vertices valences;
   const char& prefix = gtsam::Symbol(key).chr();
   const size_t& idx = gtsam::Symbol(key).index();
   if (idx == 0) {
     pg_initial_poses_[prefix] = std::vector<gtsam::Pose3>{initial_pose};
   } else {
+    if (idx != pg_initial_poses_[prefix].size()) {
+      SPARK_LOG(ERROR) << "DeformationGraph: Nodes skipped in pose graph nodes";
+    }
     pg_initial_poses_[prefix].push_back(initial_pose);
   }
 
+  gtsam::Vector6 variances;
+  variances.head<3>().setConstant(1e-02 * prior_variance);
+  variances.tail<3>().setConstant(prior_variance);
+  static const gtsam::SharedNoiseModel& noise =
+      gtsam::noiseModel::Diagonal::Variances(variances);
   new_values_.insert(key, initial_pose);
-}
-
-void DeformationGraph::processNewTempNode(const gtsam::Key& key,
-                                          const gtsam::Pose3& initial_pose,
-                                          bool add_prior,
-                                          double prior_variance) {
-  addNewTempNode(key, initial_pose);
-
   if (add_prior) {
-    addPrior(key, initial_pose, prior_variance, true);
+    new_factors_.add(gtsam::PriorFactor<gtsam::Pose3>(key, initial_pose, noise));
   }
+  return;
 }
 
 void DeformationGraph::addNewTempNode(const gtsam::Key& key,
-                                      const gtsam::Pose3& initial_pose) {
+                                      const gtsam::Pose3& initial_pose,
+                                      bool add_prior,
+                                      double prior_variance) {
+  // new temp node
+  gtsam::Values new_values;
+  gtsam::NonlinearFactorGraph new_factors;
+
   temp_pg_initial_poses_[key] = initial_pose;
-  new_temp_values_.insert(key, initial_pose);
+
+  gtsam::Vector6 variances;
+  variances.head<3>().setConstant(1e-02 * prior_variance);
+  variances.tail<3>().setConstant(prior_variance);
+  static const gtsam::SharedNoiseModel& noise =
+      gtsam::noiseModel::Diagonal::Variances(variances);
+  new_values.insert(key, initial_pose);
+  if (add_prior) {
+    new_factors.add(gtsam::PriorFactor<gtsam::Pose3>(key, initial_pose, noise));
+  }
+
+  pgo_->updateTempFactorsValues(new_factors, new_values);
+  temp_nfg_ = pgo_->getTempFactorsUnsafe();
+  temp_values_ = pgo_->getTempValues();
+  return;
 }
 
-void DeformationGraph::processNewTempNodesValences(const NodeValenceInfoList& info,
-                                                   bool add_prior,
-                                                   double edge_variance,
-                                                   double prior_variance) {
-  for (const auto& factor : info) {
-    processNewTempNode(factor.key, factor.pose, add_prior, prior_variance);
-    processNodeValence(
-        factor.key, factor.valence, factor.valence_prefix, edge_variance, true);
+// TODO(yun) add unittests
+void DeformationGraph::addNewTempNodesValences(
+    const std::vector<gtsam::Key>& keys,
+    const std::vector<gtsam::Pose3>& initial_poses,
+    const std::vector<Vertices>& valences,
+    const char& valence_prefix,
+    bool add_prior,
+    double edge_variance,
+    const std::vector<gtsam::Pose3>& initial_guesses,
+    double prior_variance) {
+  gtsam::Values new_values;
+  gtsam::NonlinearFactorGraph new_factors;
+
+  assert(keys.size() == initial_poses.size());
+  assert(keys.size() == valences.size());
+
+  gtsam::Vector6 variances;
+  variances.head<3>().setConstant(1e-02 * prior_variance);
+  variances.tail<3>().setConstant(prior_variance);
+  static const gtsam::SharedNoiseModel& noise =
+      gtsam::noiseModel::Diagonal::Variances(variances);
+
+  for (size_t i = 0; i < keys.size(); i++) {
+    temp_pg_initial_poses_[keys[i]] = initial_poses[i];
+    if (initial_guesses.size() > i) {
+      new_values.insert(keys[i], initial_guesses[i]);
+    } else {
+      new_values.insert(keys[i], initial_poses[i]);
+    }
+    if (add_prior) {
+      new_factors.add(
+          gtsam::PriorFactor<gtsam::Pose3>(keys[i], initial_poses[i], noise));
+    }
+
+    for (Vertex v : valences[i]) {
+      const gtsam::Symbol vertex(valence_prefix, v);
+      if (!values_.exists(vertex) && !new_values_.exists(vertex)) continue;
+
+      const gtsam::Pose3& node_pose = initial_poses[i];
+      const gtsam::Pose3 vertex_pose(gtsam::Rot3(),
+                                     vertex_positions_[valence_prefix].at(v));
+
+      // Define noise. Hardcoded for now
+      static const gtsam::SharedNoiseModel& noise =
+          gtsam::noiseModel::Isotropic::Variance(3, edge_variance);
+      // Create deformation edge factor
+      const DeformationEdgeFactor new_edge_1(
+          keys[i], vertex, node_pose, vertex_pose.translation(), noise);
+      const DeformationEdgeFactor new_edge_2(
+          vertex, keys[i], vertex_pose, node_pose.translation(), noise);
+      new_factors.add(new_edge_1);
+      new_factors.add(new_edge_2);
+    }
   }
+
+  pgo_->updateTempFactorsValues(new_factors, new_values);
+  temp_nfg_ = pgo_->getTempFactorsUnsafe();
+  temp_values_ = pgo_->getTempValues();
+  return;
 }
 
 void DeformationGraph::removePriorsWithPrefix(const char& prefix) {
@@ -641,7 +616,6 @@ void DeformationGraph::getGtsamTempFactorsFiltered(gtsam::NonlinearFactorGraph* 
 }
 
 void DeformationGraph::optimize() {
-  pgo_->updateTempFactorsValues(new_temp_factors_, new_temp_values_);
   pgo_->forceUpdate(new_factors_, new_values_);
   if (force_recalculate_) {
     recalculate_vertices_ = true;
@@ -654,12 +628,9 @@ void DeformationGraph::optimize() {
   temp_nfg_ = pgo_->getTempFactorsUnsafe();
   new_factors_ = gtsam::NonlinearFactorGraph();
   new_values_ = gtsam::Values();
-  new_temp_factors_ = gtsam::NonlinearFactorGraph();
-  new_temp_values_ = gtsam::Values();
 }
 
 void DeformationGraph::update() {
-  pgo_->updateTempFactorsValues(new_temp_factors_, new_temp_values_);
   pgo_->update(new_factors_, new_values_);
   values_ = pgo_->calculateEstimate();
   nfg_ = pgo_->getFactorsUnsafe();
@@ -681,6 +652,8 @@ void DeformationGraph::setParams(const KimeraRPGO::RobustSolverParams& params) {
   pgo_.reset(new KimeraRPGO::RobustSolver(pgo_params_));
 }
 
+using PoseBetween = gtsam::BetweenFactor<gtsam::Pose3>;
+
 std::optional<uint64_t> maybeGetTimestamp(const RobotTimestampMap& timestamps,
                                           int32_t robot,
                                           uint64_t key) {
@@ -696,214 +669,71 @@ std::optional<uint64_t> maybeGetTimestamp(const RobotTimestampMap& timestamps,
   return riter->second[key];
 }
 
-bool DeformationGraph::tryConvertFactorToPriorEdge(gtsam::NonlinearFactor* factor,
-                                                   const RobotTimestampMap& timestamps,
-                                                   int gnc_idx,
-                                                   PoseGraphEdge& edge) const {
-  // check if prior factor
-  const auto factor_ptr = dynamic_cast<const PosePrior*>(factor);
-  if (!factor_ptr) {
-    return false;
-  }
-
-  const gtsam::Symbol key(factor_ptr->key());
-  edge.key_from = key.index();
-  edge.key_to = key.index();
-  edge.robot_from = robot_prefix_to_id.at(key.chr());
-  edge.robot_to = robot_prefix_to_id.at(key.chr());
-  const auto stamp_ns = maybeGetTimestamp(timestamps, edge.robot_to, edge.key_to);
-  if (stamp_ns) {
-    edge.stamp_ns = *stamp_ns;
-  }
-
-  edge.pose = factor_ptr->prior().matrix();
-  if (gnc_idx >= 0 && gnc_weights_.size() > gnc_idx && gnc_weights_(gnc_idx) < 0.5) {
-    edge.type = EdgeType::REJECTED_PRIOR;
-  } else {
-    edge.type = EdgeType::PRIOR;
-  }
-
-  const auto noise_model =
-      dynamic_cast<const gtsam::noiseModel::Gaussian*>(factor_ptr->noiseModel().get());
-  if (noise_model) {
-    edge.covariance = noise_model->covariance();
-  }
-  return true;
-}
-bool DeformationGraph::tryConvertFactorToBetweenEdge(
-    gtsam::NonlinearFactor* factor,
-    const RobotTimestampMap& timestamps,
-    int gnc_idx,
-    PoseGraphEdge& edge) const {
-  // check if between factor
-  const auto factor_ptr = dynamic_cast<const PoseBetween*>(factor);
-  if (!factor_ptr) {
-    return false;
-  }
-
-  const gtsam::Symbol front(factor_ptr->front());
-  const gtsam::Symbol back(factor_ptr->back());
-  edge.key_from = front.index();
-  edge.key_to = back.index();
-  edge.robot_from = robot_prefix_to_id.at(front.chr());
-  edge.robot_to = robot_prefix_to_id.at(back.chr());
-  const auto stamp_ns = maybeGetTimestamp(timestamps, edge.robot_to, edge.key_to);
-  if (stamp_ns) {
-    edge.stamp_ns = *stamp_ns;
-  }
-
-  bool same_robot = edge.robot_from == edge.robot_to;
-  if (same_robot && edge.key_to == edge.key_from + 1) {
-    edge.type = EdgeType::ODOM;
-  } else {
-    if (gnc_idx >= 0 && gnc_weights_.size() > gnc_idx && gnc_weights_(gnc_idx) < 0.5) {
-      edge.type = EdgeType::REJECTED_LOOPCLOSE;
-    } else {
-      edge.type = EdgeType::LOOPCLOSE;
-    }
-  }
-
-  edge.pose = factor_ptr->measured().matrix();
-
-  const auto noise_model =
-      dynamic_cast<const gtsam::noiseModel::Gaussian*>(factor_ptr->noiseModel().get());
-  if (noise_model) {
-    edge.covariance = noise_model->covariance();
-  }
-  return true;
-}
-
-bool DeformationGraph::tryConvertFactorToDeformationEdge(gtsam::NonlinearFactor* factor,
-                                                         PoseGraphEdge& edge) const {
-  // check if deformation edge factor
-  const auto factor_ptr = dynamic_cast<const DeformationEdgeFactor*>(factor);
-  if (!factor_ptr) {
-    return false;
-  }
-
-  const gtsam::Symbol front(factor_ptr->front());
-  const gtsam::Symbol back(factor_ptr->back());
-  edge.key_from = front.index();
-  edge.key_to = back.index();
-
-  if (vertex_prefix_to_id.count(front.chr()) && vertex_prefix_to_id.count(back.chr())) {
-    edge.type = EdgeType::MESH;
-    edge.robot_from = vertex_prefix_to_id.at(front.chr());
-    edge.robot_to = vertex_prefix_to_id.at(back.chr());
-    edge.stamp_ns = vertex_stamps_.at(front.chr()).at(front.index());
-  } else if (vertex_prefix_to_id.count(front.chr())) {
-    edge.type = EdgeType::MESH_POSE;
-    edge.robot_from = vertex_prefix_to_id.at(front.chr());
-    edge.robot_to = robot_prefix_to_id.at(back.chr());
-    edge.stamp_ns = vertex_stamps_.at(front.chr()).at(front.index());
-  } else if (vertex_prefix_to_id.count(back.chr())) {
-    edge.type = EdgeType::POSE_MESH;
-    edge.robot_from = robot_prefix_to_id.at(front.chr());
-    edge.robot_to = vertex_prefix_to_id.at(back.chr());
-    edge.stamp_ns = vertex_stamps_.at(back.chr()).at(back.index());
-  } else {
-    return false;
-  }
-  edge.pose = gtsam::Pose3(gtsam::Rot3(), factor_ptr->measurement()).matrix();
-
-  const auto noise_model =
-      dynamic_cast<const gtsam::noiseModel::Gaussian*>(factor_ptr->noiseModel().get());
-  if (noise_model) {
-    edge.covariance.block(3, 3, 3, 3) = noise_model->covariance();
-  }
-
-  return true;
-}
-
-bool DeformationGraph::tryConvertKeyToPoseNode(const gtsam::Key& key,
-                                               const RobotTimestampMap& timestamps,
-                                               PoseGraphNode& node,
-                                               bool optimized) const {
-  gtsam::Symbol node_symb(key);
-  if (!robot_prefix_to_id.count(node_symb.chr())) {
-    return false;
-  }
-
-  const size_t robot_id = robot_prefix_to_id.at(node_symb.chr());
-  node.key = node_symb.index();
-  node.robot_id = robot_id;
-  const auto stamp_ns = maybeGetTimestamp(timestamps, node.robot_id, node.key);
-  if (stamp_ns) {
-    node.stamp_ns = *stamp_ns;
-  } else {
-    SPARK_LOG(WARNING) << "Invalid timestamp for (robot=" << node.robot_id
-                       << ", pose=" << node.key << ")!";
-  }
-  node.pose =
-      optimized ? values_.at<gtsam::Pose3>(key).matrix()
-                : pg_initial_poses_.at(node_symb.chr()).at(node_symb.index()).matrix();
-  return true;
-}
-
-size_t DeformationGraph::getRemappedId(const std::map<size_t, size_t>& remap,
-                                       size_t original) const {
-  const auto iter = remap.find(original);
-  return iter == remap.end() ? original : iter->second;
-}
-
-bool DeformationGraph::tryConvertKeyToMeshNode(const gtsam::Key& key,
-                                               PoseGraphNode& node,
-                                               bool optimized) const {
-  gtsam::Symbol node_symb(key);
-
-  if (!vertex_prefix_to_id.count(node_symb.chr())) {
-    return false;
-  }
-
-  const size_t robot_id = vertex_prefix_to_id.at(node_symb.chr());
-  node.key = node_symb.index();
-  node.robot_id = robot_id;
-  node.stamp_ns = vertex_stamps_.at(node_symb.chr()).at(node_symb.index());
-  node.pose =
-      optimized
-          ? values_.at<gtsam::Pose3>(key).matrix()
-          : gtsam::Pose3(gtsam::Rot3(),
-                         vertex_positions_.at(node_symb.chr()).at(node_symb.index()))
-                .matrix();
-  return true;
-}
-
-PoseGraph::Ptr DeformationGraph::getPoseGraph(const RobotTimestampMap& timestamps,
-                                              bool include_deformation_edges,
-                                              bool include_between_edges,
-                                              bool optimized) const {
+PoseGraph::Ptr DeformationGraph::getPoseGraph(
+    const RobotTimestampMap& timestamps) const {
   auto graph = std::make_shared<PoseGraph>();
 
   // first store the factors as edges
   for (size_t i = 0; i < nfg_.size(); i++) {
-    PoseGraphEdge pg_edge;
-    if (include_between_edges &&
-        tryConvertFactorToBetweenEdge(nfg_[i].get(), timestamps, i, pg_edge)) {
-      graph->edges.push_back(pg_edge);
+    // check if between factor
+    const auto factor_ptr = dynamic_cast<const PoseBetween*>(nfg_[i].get());
+    if (!factor_ptr) {
+      continue;
     }
 
-    if (include_between_edges &&
-        tryConvertFactorToPriorEdge(nfg_[i].get(), timestamps, i, pg_edge)) {
-      graph->edges.push_back(pg_edge);
+    const auto& factor = *factor_ptr;
+    auto& edge = graph->edges.emplace_back();
+    const gtsam::Symbol front(factor.front());
+    const gtsam::Symbol back(factor.back());
+    edge.key_from = front.index();
+    edge.key_to = back.index();
+    edge.robot_from = robot_prefix_to_id.at(front.chr());
+    edge.robot_to = robot_prefix_to_id.at(back.chr());
+    const auto stamp_ns = maybeGetTimestamp(timestamps, edge.robot_to, edge.key_to);
+    if (stamp_ns) {
+      edge.stamp_ns = *stamp_ns;
     }
 
-    if (include_deformation_edges &&
-        tryConvertFactorToDeformationEdge(nfg_[i].get(), pg_edge)) {
-      graph->edges.push_back(pg_edge);
+    bool same_robot = edge.robot_from == edge.robot_to;
+    if (same_robot && edge.key_to == edge.key_from + 1) {
+      edge.type = pose_graph_tools::PoseGraphEdge::ODOM;
+    } else {
+      if (gnc_weights_.size() > i && gnc_weights_(i) < 0.5) {
+        edge.type = pose_graph_tools::PoseGraphEdge::REJECTED_LOOPCLOSE;
+      } else {
+        edge.type = pose_graph_tools::PoseGraphEdge::LOOPCLOSE;
+      }
+    }
+
+    edge.pose = factor.measured().matrix();
+
+    const auto noise_model =
+        dynamic_cast<const gtsam::noiseModel::Gaussian*>(factor.noiseModel().get());
+    if (noise_model) {
+      edge.covariance = noise_model->covariance();
     }
   }
 
   // Then store the values as nodes
   for (const auto& key : values_.keys()) {
-    PoseGraphNode pg_node;
-    if (include_between_edges &&
-        tryConvertKeyToPoseNode(key, timestamps, pg_node, optimized)) {
-      graph->nodes.push_back(pg_node);
+    gtsam::Symbol node_symb(key);
+    if (!robot_prefix_to_id.count(node_symb.chr())) {
+      continue;
     }
 
-    if (include_deformation_edges && tryConvertKeyToMeshNode(key, pg_node, optimized)) {
-      graph->nodes.push_back(pg_node);
+    const size_t robot_id = robot_prefix_to_id.at(node_symb.chr());
+    auto& node = graph->nodes.emplace_back();
+    node.key = node_symb.index();
+    node.robot_id = robot_id;
+    const auto stamp_ns = maybeGetTimestamp(timestamps, node.robot_id, node.key);
+    if (stamp_ns) {
+      node.stamp_ns = *stamp_ns;
+    } else {
+      SPARK_LOG(WARNING) << "Invalid timestamp for (robot=" << node.robot_id
+                         << ", pose=" << node.key << ")!";
     }
+
+    node.pose = values_.at<gtsam::Pose3>(key).matrix();
   }
 
   return graph;

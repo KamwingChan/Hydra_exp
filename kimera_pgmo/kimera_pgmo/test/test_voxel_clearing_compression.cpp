@@ -77,8 +77,7 @@ bool checkTriangles(const std::vector<std::vector<uint32_t>> &expected,
       continue;
     }
 
-    std::vector<uint32_t> new_triangle(result[i].vertices.begin(),
-                                       result[i].vertices.end());
+    std::vector<uint32_t> new_triangle = result[i].vertices;
     result_filtered.push_back(new_triangle);
   }
 

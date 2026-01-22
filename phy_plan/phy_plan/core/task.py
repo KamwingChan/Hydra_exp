@@ -1,9 +1,9 @@
 """
-task.py: 任务规划领域语言定义
+task.py: domain language definition for task planning
 
-定义机器人任务的动作类型和任务序列结构，用于：
-1. LLM 输出的结构化表示
-2. 任务执行器的输入格式
+define the action types and task sequence structure for robot tasks, used for:
+1. structured representation of LLM output
+2. input format for task executor
 """
 
 from dataclasses import dataclass, field
@@ -13,24 +13,24 @@ import json
 
 
 class ActionType(Enum):
-    """动作类型枚举"""
+    """action type enumeration"""
     # 物体操作
-    PICK = "pick"                 # 抓取物体
-    PLACE = "place"               # 放置物体到指定位置
-    MOVE_OBJECT = "move_object"   # 移动物体（pick + place 的组合）
-    # 机器人移动
-    NAVIGATE = "navigate"         # 导航到位置
-    # 高层动作（可分解为低层动作序列）
-    ARRANGE = "arrange"           # 摆放物体（如椅子归位）
-    CLEAN_UP = "clean_up"         # 整理区域
-    # 感知动作
-    OBSERVE = "observe"           # 观察/获取物体信息
-    LOCATE = "locate"             # 定位物体
+    PICK = "pick"                 # pick object
+    PLACE = "place"               # place object on a surface
+    MOVE_OBJECT = "move_object"   # move object (combination of pick and place)
+    # robot movement
+    NAVIGATE = "navigate"         # navigate to a position
+    # high-level actions (can be decomposed into low-level action sequences)
+    ARRANGE = "arrange"           # arrange objects (e.g. place chairs around tables)
+    CLEAN_UP = "clean_up"         # clean up the area
+    # perception actions
+    OBSERVE = "observe"           # observe/get object information
+    LOCATE = "locate"             # locate object
 
 
 @dataclass
 class Position:
-    """3D 位置"""
+    """3D position"""
     x: float
     y: float
     z: float
@@ -52,15 +52,15 @@ class Position:
 
 @dataclass
 class Action:
-    """单个动作定义"""
+    """single action definition"""
     action_type: ActionType
-    target_object: Optional[str] = None      # 目标物体 ID，如 "O(13)"
-    target_position: Optional[Position] = None  # 目标位置
-    params: Dict[str, Any] = field(default_factory=dict)  # 额外参数
-    description: str = ""                    # 动作描述（用于调试/可视化）
+    target_object: Optional[str] = None      # target object ID, e.g. "O(13)"
+    target_position: Optional[Position] = None  # target position
+    params: Dict[str, Any] = field(default_factory=dict)  # additional parameters
+    description: str = ""                    # action description (for debugging/visualization)
     
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
+        """convert to dictionary format"""
         result = {
             "action_type": self.action_type.value,
             "description": self.description,
@@ -75,7 +75,7 @@ class Action:
     
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Action":
-        """从字典创建 Action"""
+        """create Action from dictionary"""
         action_type = ActionType(d["action_type"])
         target_object = d.get("target_object")
         target_position = None
@@ -98,13 +98,13 @@ class Action:
 
 @dataclass
 class TaskSequence:
-    """任务序列：一系列有序的动作"""
+    """task sequence: a sequence of ordered actions"""
     actions: List[Action] = field(default_factory=list)
-    task_name: str = ""                      # 任务名称
-    metadata: Dict[str, Any] = field(default_factory=dict)  # 元数据
+    task_name: str = ""                      # task name
+    metadata: Dict[str, Any] = field(default_factory=dict)  # metadata
     
     def add_action(self, action: Action) -> None:
-        """添加动作到序列"""
+        """add action to sequence"""
         self.actions.append(action)
     
     def add_move_object(
@@ -113,7 +113,7 @@ class TaskSequence:
         target_position: Position,
         description: str = ""
     ) -> None:
-        """便捷方法：添加移动物体动作"""
+        """convenient method: add move object action"""
         self.actions.append(Action(
             action_type=ActionType.MOVE_OBJECT,
             target_object=object_id,
@@ -122,7 +122,7 @@ class TaskSequence:
         ))
     
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典格式"""
+        """convert to dictionary format"""
         return {
             "task_name": self.task_name,
             "actions": [a.to_dict() for a in self.actions],
@@ -130,12 +130,12 @@ class TaskSequence:
         }
     
     def to_json(self, indent: int = 2) -> str:
-        """转换为 JSON 字符串"""
+        """convert to JSON string"""
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
     
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "TaskSequence":
-        """从字典创建 TaskSequence"""
+        """create TaskSequence from dictionary"""
         actions = [Action.from_dict(a) for a in d.get("actions", [])]
         return cls(
             actions=actions,
@@ -145,7 +145,7 @@ class TaskSequence:
     
     @classmethod
     def from_json(cls, json_str: str) -> "TaskSequence":
-        """从 JSON 字符串创建 TaskSequence"""
+        """create TaskSequence from JSON string"""
         return cls.from_dict(json.loads(json_str))
     
     def __len__(self) -> int:
@@ -155,7 +155,7 @@ class TaskSequence:
         return iter(self.actions)
     
     def summary(self) -> str:
-        """生成任务序列摘要"""
+        """generate task sequence summary"""
         lines = [f"Task: {self.task_name}", f"Actions ({len(self.actions)}):"]
         for i, action in enumerate(self.actions, 1):
             lines.append(f"  {i}. [{action.action_type.value}] {action.description}")

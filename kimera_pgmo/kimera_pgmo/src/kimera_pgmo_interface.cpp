@@ -209,9 +209,8 @@ void KimeraPgmoInterface::loadDeformationGraphFromFile(const std::string& input)
 }
 
 void KimeraPgmoInterface::loadDeformationGraphFromFile(const std::string& input,
-                                                       size_t robot_id,
-                                                       bool include_priors) {
-  deformation_graph_->load(input, true, true, robot_id, include_priors);
+                                                       size_t robot_id) {
+  deformation_graph_->load(input, true, true, robot_id);
   num_loop_closures_ = deformation_graph_->getNumLoopclosures();
 }
 
@@ -247,7 +246,7 @@ ProcessPoseGraphStatus KimeraPgmoInterface::processIncrementalPoseGraph(
     const gtsam::Pose3 init_pose(init_node.pose.matrix());
 
     // Initiate first node and add prior
-    deformation_graph_->processNewNode(
+    deformation_graph_->addNewNode(
         key_symb.key(), init_pose, config_.b_add_initial_prior, config_.prior_variance);
 
     // Create first sparse frame
@@ -348,10 +347,11 @@ ProcessPoseGraphStatus KimeraPgmoInterface::processIncrementalPoseGraph(
 
           // Add the pose estimate of new node and between factor (odometry) to
           // deformation graph
-          deformation_graph_->processNewBetween(
+          deformation_graph_->addNewBetween(
               sparse_key - 1,
               sparse_key,
               sparse_frames_[sparse_key - 1].current_transform,
+              new_pose,
               config_.odom_variance);
         }
       } else if (pg_edge.type == pose_graph_tools::PoseGraphEdge::LOOPCLOSE &&
@@ -377,9 +377,10 @@ ProcessPoseGraphStatus KimeraPgmoInterface::processIncrementalPoseGraph(
             sparse_frames_.at(to_sparse_key).keyed_transforms.at(to_key).inverse();
         // Loop closure edge (only add if we are in full
         // optimization mode ) Add to deformation graph
-        deformation_graph_->processNewBetween(from_sparse_key,
+        deformation_graph_->addNewBetween(from_sparse_key,
                                           to_sparse_key,
                                           from_sparse_T_to_sparse,
+                                          gtsam::Pose3(),
                                           config_.lc_variance);
         if (!loop_closures_.count(from_sparse_key)) {
           loop_closures_[from_sparse_key] = std::set<gtsam::Key>();
@@ -458,12 +459,12 @@ ProcessMeshGraphStatus KimeraPgmoInterface::processIncrementalMeshGraph(
   }
 
   // Add to deformation graph
-  deformation_graph_->processNewMeshEdgesAndNodes(new_mesh_edges,
-                                                  new_mesh_nodes,
-                                                  new_mesh_node_stamps,
-                                                  &new_indices,
-                                                  &new_index_stamps,
-                                                  config_.mesh_edge_variance);
+  deformation_graph_->addNewMeshEdgesAndNodes(new_mesh_edges,
+                                              new_mesh_nodes,
+                                              new_mesh_node_stamps,
+                                              &new_indices,
+                                              &new_index_stamps,
+                                              config_.mesh_edge_variance);
   assert(new_indices.size() == new_index_stamps.size());
 
   bool connection = false;
@@ -502,7 +503,7 @@ ProcessMeshGraphStatus KimeraPgmoInterface::processIncrementalMeshGraph(
                         << " to " << node_val.second.size() << " vertices.";
       }
 
-      deformation_graph_->processNodeValence(
+      deformation_graph_->addNodeValence(
           gtsam::Symbol(GetRobotPrefix(robot_id), node_val.first),
           node_val.second,
           GetVertexPrefix(robot_id),
@@ -529,7 +530,7 @@ void KimeraPgmoInterface::processOptimizedPath(const Path& path, size_t robot_id
     node_estimates.push_back({node_symbol.key(), path[i]});
   }
 
-  deformation_graph_->processNodeMeasurements(node_estimates, config_.prior_variance);
+  deformation_graph_->addNodeMeasurements(node_estimates, config_.prior_variance);
 }
 
 bool KimeraPgmoInterface::optimizeFullMesh(

@@ -224,13 +224,13 @@ size_t UpdatePlacesFunctor::interpFromValues(const LayerView& view,
   return 0;
 }
 
-void UpdatePlacesFunctor::call(const DynamicSceneGraph& unmerged,
-                               SharedDsgInfo& dsg,
-                               const UpdateInfo::ConstPtr& info) const {
+MergeList UpdatePlacesFunctor::call(const DynamicSceneGraph& unmerged,
+                                    SharedDsgInfo& dsg,
+                                    const UpdateInfo::ConstPtr& info) const {
   ScopedTimer spin_timer("backend/update_places", info->timestamp_ns);
 
   if (!unmerged.hasLayer(DsgLayers::PLACES)) {
-    return;
+    return {};
   }
 
   const auto new_loopclosure = info->loop_closure_detected;
@@ -257,6 +257,7 @@ void UpdatePlacesFunctor::call(const DynamicSceneGraph& unmerged,
   }
 
   VLOG(2) << "[Hydra Backend] Places update: " << num_changed << " nodes";
+  return {};
 }
 
 MergeList UpdatePlacesFunctor::findMerges(const DynamicSceneGraph& graph,

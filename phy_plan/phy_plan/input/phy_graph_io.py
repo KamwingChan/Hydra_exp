@@ -1,9 +1,9 @@
 """
-phy_graph_io.py: 加载 phy_graph 输出的 JSON 场景图
+phy_graph_io.py: Load phy_graph JSON scene graph
 
-支持两种格式：
-1. 完整版：scene_graph_latest.json（含 position, bounding_box, physical_properties）
-2. compact 版：scene_graph_compact.json（仅 node_id, category, bounding_box）
+supports two formats:
+1. full version: scene_graph_latest.json (contains position, bounding_box, physical_properties)
+2. compact version: scene_graph_compact.json (only contains node_id, category, bounding_box)
 """
 
 import json
@@ -21,13 +21,13 @@ from ..core.scene_graph import (
 
 def load_scene_graph(file_path: Union[str, Path]) -> SceneGraph:
     """
-    从 phy_graph JSON 文件加载场景图
+    load scene graph from phy_graph JSON file
     
     Args:
-        file_path: JSON 文件路径
+        file_path: JSON file path
         
     Returns:
-        SceneGraph 对象
+        SceneGraph object
         
     Example:
         >>> sg = load_scene_graph("data/scene_graph_office.json")
@@ -45,22 +45,22 @@ def load_scene_graph(file_path: Union[str, Path]) -> SceneGraph:
 
 def load_scene_graph_from_dict(data: Dict[str, Any]) -> SceneGraph:
     """
-    从字典数据创建 SceneGraph
+    create SceneGraph from dictionary data
     
-    支持两种格式：
-    1. phy_graph 输出格式: {"scene_graph": {"rooms": [...], "objects": [...]}}
-    2. 直接格式: {"rooms": [...], "objects": [...]}
+    supports two formats:
+    1. phy_graph output format: {"scene_graph": {"rooms": [...], "objects": [...]}}
+    2. direct format: {"rooms": [...], "objects": [...]}
     
     Args:
-        data: JSON 解析后的字典
+        data: dictionary data after JSON parsing
         
     Returns:
-        SceneGraph 对象
+        SceneGraph object
     """
     sg = SceneGraph()
     sg.source = "phy_graph"
     
-    # 处理嵌套结构
+    # process nested structure
     if "scene_graph" in data:
         scene_data = data["scene_graph"]
         sg.timestamp = scene_data.get("timestamp", "")
@@ -68,25 +68,25 @@ def load_scene_graph_from_dict(data: Dict[str, Any]) -> SceneGraph:
         scene_data = data
         sg.timestamp = data.get("timestamp", "")
     
-    # 保存元数据
+    # save metadata
     if "source" in data:
         sg.metadata["original_source"] = data["source"]
     if "schema_version" in data:
         sg.metadata["schema_version"] = data["schema_version"]
     
-    # 解析房间
+    # parse rooms
     rooms_data = scene_data.get("rooms", [])
     for room_dict in rooms_data:
         room = RoomNode.from_dict(room_dict)
         sg.rooms[room.room_id] = room
     
-    # 构建物体到房间的映射
+    # build object to room mapping
     object_to_room: Dict[str, str] = {}
     for room in sg.rooms.values():
         for obj_id in room.object_ids:
             object_to_room[obj_id] = room.room_id
     
-    # 解析物体
+    # parse objects
     objects_data = scene_data.get("objects", [])
     for obj_dict in objects_data:
         node_id = obj_dict.get("node_id", "")
@@ -99,12 +99,12 @@ def load_scene_graph_from_dict(data: Dict[str, Any]) -> SceneGraph:
 
 def save_scene_graph(sg: SceneGraph, file_path: Union[str, Path], compact: bool = False) -> None:
     """
-    保存场景图到 JSON 文件
+    save scene graph to JSON file
     
     Args:
-        sg: SceneGraph 对象
-        file_path: 输出文件路径
-        compact: 是否使用 compact 格式
+        sg: SceneGraph object
+        file_path: output file path
+        compact: whether to use compact format
     """
     file_path = Path(file_path)
     file_path.parent.mkdir(parents=True, exist_ok=True)

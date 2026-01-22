@@ -28,13 +28,16 @@ namespace phy_graph {
  * 存储从JSON文件中解析的物理推理结果
  */
 struct PhysicalProperties {
-    int friction_level;      // 摩擦等级 (0-3)
-    bool pushable;           // 是否可推动
-    int weight_level;        // 重量等级 (0-3)
-    std::string description; // VLM生成的描述
+    int friction_level;           // 摩擦等级 (0-2)
+    bool pushable;                // 是否可推动
+    int weight_level;             // 重量等级 (0-2)
+    std::string description;      // VLM生成的描述
+    std::string estimated_weight_kg;  // 估计重量范围 (如 "5-10")
+    int inference_confidence;     // 推理置信度 (图像评分 0-100)
     
     PhysicalProperties() 
-        : friction_level(-1), pushable(false), weight_level(-1), description("") {}
+        : friction_level(-1), pushable(false), weight_level(-1), 
+          description(""), estimated_weight_kg(""), inference_confidence(-1) {}
 };
 
 /**
@@ -242,6 +245,9 @@ private:
 
     // 房间分类器
     std::unique_ptr<RoomClassifier> room_classifier_;
+    
+    // ROS 发布者：发布完整的场景图 JSON
+    ros::Publisher scene_graph_pub_;
 };
 
 } // namespace phy_graph

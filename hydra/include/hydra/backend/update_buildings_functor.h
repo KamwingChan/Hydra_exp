@@ -47,9 +47,9 @@ struct UpdateBuildingsFunctor : public UpdateFunctor {
 
   explicit UpdateBuildingsFunctor(const Config& config);
 
-  void call(const DynamicSceneGraph& unmerged,
-            SharedDsgInfo& dsg,
-            const UpdateInfo::ConstPtr& info) const override;
+  MergeList call(const DynamicSceneGraph& unmerged,
+                 SharedDsgInfo& dsg,
+                 const UpdateInfo::ConstPtr& info) const override;
 
  private:
   inline static const auto registration_ =

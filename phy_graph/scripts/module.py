@@ -81,6 +81,7 @@ class PhysicalInferenceServer:
             response.friction_level = properties.get("friction_level", 0)
             response.pushable = bool(properties.get("pushable", 0))
             response.weight_level = properties.get("weight_level", 0)
+            response.estimated_weight_kg = properties.get("estimated_weight_kg", "")
             
             # Calculate processing time
             end_time = time.time()

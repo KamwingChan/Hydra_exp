@@ -92,6 +92,7 @@ class PhysicalInference:
         - "friction_level": An integer from 0 (very low friction, e.g., ice) to 2 (high friction, e.g., rubber).
         - "pushable": An integer, 1 if a standard mobile robot could likely push it, 0 otherwise.
         - "weight_level": An integer from 0 (light, e.g., plastic bottle) to 2 (heavy, e.g., metal cabinet).
+        - "estimated_weight_kg": A string representing the estimated weight range in kg (e.g., "0.5-2", "5-10", "20-50"). Be realistic based on the object type and apparent size.
         
         Do not include any text outside of the JSON object itself.
         """

@@ -65,9 +65,9 @@ struct Update2dPlacesFunctor : public UpdateFunctor {
 
   explicit Update2dPlacesFunctor(const Config& config);
   Hooks hooks() const override;
-  void call(const DynamicSceneGraph& unmerged,
-            SharedDsgInfo& dsg,
-            const UpdateInfo::ConstPtr& info) const override;
+  MergeList call(const DynamicSceneGraph& unmerged,
+                 SharedDsgInfo& dsg,
+                 const UpdateInfo::ConstPtr& info) const override;
   MergeList findMerges(const DynamicSceneGraph& graph,
                        const UpdateInfo::ConstPtr& info) const override;
 

@@ -75,8 +75,6 @@ Face::Face(size_t v1, size_t v2, size_t v3) : v1(v1), v2(v2), v3(v3) {}
 Face::Face(const std::vector<size_t>& indices, size_t i)
     : v1(indices.at(i)), v2(indices.at(i + 1)), v3(indices.at(i + 2)) {}
 
-Face::Face(const traits::Face& face) : v1(face[0]), v2(face[1]), v3(face[2]) {}
-
 bool Face::valid() const { return v1 != v2 && v1 != v3 && v2 != v3; }
 
 void Face::fill(std::vector<uint32_t>& other) const { other = {v1, v2, v3}; }
@@ -110,36 +108,32 @@ MeshDelta::MeshDelta(const pcl::PointCloud<pcl::PointXYZRGBA>& vertices,
 }
 
 bool MeshDelta::hasSemantics() const {
-  // For contunue_mapping, we only need to check if the semantic updates are not empty
   return semantic_updates.size() == vertex_updates->size();
-  // return !semantic_updates.empty();
 }
 
 void MeshDelta::updateVertices(pcl::PointCloud<pcl::PointXYZRGBA>& vertices,
                                std::vector<Timestamp>* stamps,
-                               std::vector<uint32_t>* semantics,
-                               const Eigen::Isometry3f* transform) const {
+                               std::vector<uint32_t>* semantics) const {
   const bool semantics_valid = semantics && hasSemantics();
   if (!stamps && !semantics) {
-    updateVertices(vertices, transform);
+    updateVertices(vertices);
   } else if (!semantics_valid) {
     StampedCloud<pcl::PointXYZRGBA> cloud{vertices, *stamps};
-    updateVertices(cloud, transform);
+    updateVertices(cloud);
   } else if (!stamps) {
     LabeledCloud cloud{vertices, *semantics};
-    updateVertices(cloud, transform);
+    updateVertices(cloud);
   } else {
     LabeledStampedCloud cloud{vertices, *stamps, *semantics};
-    updateVertices(cloud, transform);
+    updateVertices(cloud);
   }
 }
 
 void MeshDelta::updateMesh(pcl::PointCloud<pcl::PointXYZRGBA>& vertices,
                            std::vector<Timestamp>& stamps,
                            std::vector<pcl::Vertices>& faces,
-                           std::vector<uint32_t>* semantics,
-                           const Eigen::Isometry3f* transform) const {
-  updateVertices(vertices, &stamps, semantics, transform);
+                           std::vector<uint32_t>* semantics) const {
+  updateVertices(vertices, &stamps, semantics);
   updateFaces(faces);
 }
 
@@ -180,14 +174,6 @@ size_t MeshDelta::getTotalArchivedVertices() const {
 
 size_t MeshDelta::getTotalArchivedFaces() const {
   return face_start + face_archive_updates.size();
-}
-
-size_t MeshDelta::getTotalVertices() const {
-  return vertex_start + vertex_updates->size();
-}
-
-size_t MeshDelta::getTotalFaces() const {
-  return face_start + face_archive_updates.size() + face_updates.size();
 }
 
 size_t MeshDelta::getLocalIndex(size_t index) const { return index - vertex_start; }

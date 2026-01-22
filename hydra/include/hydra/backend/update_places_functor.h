@@ -58,9 +58,9 @@ struct UpdatePlacesFunctor : public UpdateFunctor {
   } const config;
 
   explicit UpdatePlacesFunctor(const Config& config);
-  void call(const DynamicSceneGraph& unmerged,
-            SharedDsgInfo& dsg,
-            const UpdateInfo::ConstPtr& info) const override;
+  MergeList call(const DynamicSceneGraph& unmerged,
+                 SharedDsgInfo& dsg,
+                 const UpdateInfo::ConstPtr& info) const override;
 
   size_t updateFromValues(const LayerView& view,
                           SharedDsgInfo& dsg,

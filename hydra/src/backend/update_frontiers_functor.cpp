@@ -55,10 +55,10 @@ UpdateFunctor::Hooks UpdateFrontiersFunctor::hooks() const {
   return my_hooks;
 }
 
-void UpdateFrontiersFunctor::call(const DynamicSceneGraph&,
-                                  SharedDsgInfo&,
-                                  const UpdateInfo::ConstPtr&) const {
-  return;
+MergeList UpdateFrontiersFunctor::call(const DynamicSceneGraph&,
+                                       SharedDsgInfo&,
+                                       const UpdateInfo::ConstPtr&) const {
+  return {};
 }
 
 void UpdateFrontiersFunctor::cleanup(uint64_t timestamp_ns, SharedDsgInfo& dsg) const {

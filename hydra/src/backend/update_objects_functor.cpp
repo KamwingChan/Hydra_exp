@@ -98,13 +98,13 @@ UpdateFunctor::Hooks UpdateObjectsFunctor::hooks() const {
   return my_hooks;
 }
 
-void UpdateObjectsFunctor::call(const DynamicSceneGraph& unmerged,
-                                SharedDsgInfo& dsg,
-                                const UpdateInfo::ConstPtr& info) const {
+MergeList UpdateObjectsFunctor::call(const DynamicSceneGraph& unmerged,
+                                     SharedDsgInfo& dsg,
+                                     const UpdateInfo::ConstPtr& info) const {
   ScopedTimer spin_timer("backend/update_objects", info->timestamp_ns);
   if (!unmerged.hasLayer(DsgLayers::OBJECTS)) {
     VLOG(5) << "Skipping object update due to missing layer";
-    return;
+    return {};
   }
 
   // we want to use the unmerged graph for most things
@@ -138,6 +138,7 @@ void UpdateObjectsFunctor::call(const DynamicSceneGraph& unmerged,
   }
 
   VLOG(2) << "[Hydra Backend] Object update: " << num_changed << " node(s)";
+  return {};
 }
 
 MergeList UpdateObjectsFunctor::findMerges(const DynamicSceneGraph& graph,

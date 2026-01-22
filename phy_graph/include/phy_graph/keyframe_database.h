@@ -24,20 +24,27 @@ public:
         ros::Time timestamp;
         Eigen::Isometry3d world_T_camera;
         
-        // Storage state
+        // RGB Storage state
         bool is_on_disk;
         std::string disk_path;
         std::vector<uchar> memory_buffer; // Empty if is_on_disk is true
         
-        Keyframe() : is_on_disk(false) {}
+        // Depth Storage state (optional)
+        bool has_depth;
+        bool depth_is_on_disk;
+        std::string depth_disk_path;
+        std::vector<uchar> depth_memory_buffer; // PNG compressed 16-bit depth
+        
+        Keyframe() : is_on_disk(false), has_depth(false), depth_is_on_disk(false) {}
 
-        // Helper to decode image on demand (from memory or disk)
-        cv::Mat decode() const;
+        // Helper to decode images on demand (from memory or disk)
+        cv::Mat decode() const;         // RGB image (BGR8)
+        cv::Mat decodeDepth() const;    // Depth image (16UC1, mm)
     };
     
     /**
      * @brief Construct a new Keyframe Database
-     * 
+     *
      * @param storage_dir Directory to save offloaded keyframes (e.g. output/keyframes)
      * @param max_memory_frames Max number of frames to keep in RAM (e.g. 3000)
      * @param min_translation Minimum movement (meters) for new keyframe
@@ -45,15 +52,19 @@ public:
      */
     KeyframeDatabase(const std::string& storage_dir,
                      size_t max_memory_frames = 3000,
-                     double min_translation = 0.2, 
+                     double min_translation = 0.2,
                      double min_rotation = 0.1,
                      double min_time_interval = 0.2);
     
     /**
      * @brief Add an image to the database. Handles compression and offloading.
+     * @param rgb_msg RGB image message
+     * @param world_T_camera Camera pose in world frame
+     * @param depth_msg Optional depth image message (16UC1 or 32FC1)
      */
-    void addImage(const sensor_msgs::ImageConstPtr& msg,
-                  const Eigen::Isometry3d& world_T_camera);
+    void addImage(const sensor_msgs::ImageConstPtr& rgb_msg,
+                  const Eigen::Isometry3d& world_T_camera,
+                  const sensor_msgs::ImageConstPtr& depth_msg = nullptr);
     
     /**
      * @brief Get all keyframes within a time range.

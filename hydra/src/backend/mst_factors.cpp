@@ -68,29 +68,44 @@ void addPlacesToDeformationGraph(const DynamicSceneGraph& graph,
   {  // start timing scope
     ScopedTimer add_timer("backend/add_places_nodes", timestamp_ns);
 
-    kimera_pgmo::NodeValenceInfoList factors;
+    // New API requires separate vectors instead of NodeValenceInfoList
+    std::vector<gtsam::Key> keys;
+    std::vector<gtsam::Pose3> initial_poses;
+    std::vector<kimera_pgmo::Vertices> valences;
+    char valence_prefix = 0;
+    bool prefix_set = false;
+
     for (const auto& [node_id, node] : places.nodes()) {
       const auto& attrs = node->attributes<PlaceNodeAttributes>();
       if (!node->hasSiblings()) {
         continue;
       }
 
-      auto& factor = factors.emplace_back();
-      factor.valence_prefix = prefix_lookup(node_id);
-      factor.key = node_id;
-      factor.pose = gtsam::Pose3(gtsam::Rot3(), attrs.position);
+      // Get prefix from first valid node (assume all nodes share same prefix)
+      if (!prefix_set) {
+        valence_prefix = prefix_lookup(node_id);
+        prefix_set = true;
+      }
 
+      keys.push_back(node_id);
+      initial_poses.push_back(gtsam::Pose3(gtsam::Rot3(), attrs.position));
+
+      kimera_pgmo::Vertices node_valences;
       if (mst_info.leaves.count(node_id)) {
         for (const auto& idx : attrs.deformation_connections) {
           if (idx == std::numeric_limits<size_t>::max()) {
             continue;
           }
-          factor.valence.push_back(idx);
+          node_valences.push_back(idx);
         }
       }
+      valences.push_back(node_valences);
     }
 
-    deformation_graph.processNewTempNodesValences(factors, false, mesh_edge_variance);
+    if (!keys.empty()) {
+      deformation_graph.addNewTempNodesValences(
+          keys, initial_poses, valences, valence_prefix, false, mesh_edge_variance);
+    }
   }  // end timing scope
 
   {  // start timing scope
@@ -106,7 +121,7 @@ void addPlacesToDeformationGraph(const DynamicSceneGraph& graph,
       mst_edges.edges.push_back(mst_e);
     }
 
-    deformation_graph.processNewTempEdges(mst_edges, mst_edge_variance);
+    deformation_graph.addNewTempEdges(mst_edges, mst_edge_variance);
   }  // end timing scope
 }
 

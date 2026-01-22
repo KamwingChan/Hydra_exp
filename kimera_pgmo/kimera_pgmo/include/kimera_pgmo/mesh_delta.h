@@ -12,8 +12,8 @@
 #include <pcl/point_types.h>
 
 #include <optional>
-#include <set>
 #include <vector>
+#include <set>
 
 #include "kimera_pgmo/mesh_traits.h"
 #include "kimera_pgmo/pcl_mesh_traits.h"
@@ -25,7 +25,6 @@ struct Face {
   Face(size_t v1, size_t v2, size_t v3);
 
   Face(const std::vector<size_t>& indices, size_t i);
-  Face(const traits::Face& face);
 
   bool valid() const;
 
@@ -34,8 +33,6 @@ struct Face {
   uint32_t v1;
   uint32_t v2;
   uint32_t v3;
-
-  operator std::array<size_t, 3>() const { return {v1, v2, v3}; }
 };
 
 std::ostream& operator<<(std::ostream& out, const Face& face);
@@ -53,36 +50,26 @@ class MeshDelta {
             const std::vector<pcl::Vertices>& faces,
             std::optional<std::vector<uint32_t>> semantics = std::nullopt);
 
-  template <typename Vertices, typename Faces>
-  static MeshDelta::Ptr fromMesh(const Vertices& vertices, const Faces& faces);
-
-  template <typename Mesh>
-  static MeshDelta::Ptr fromMesh(const Mesh& mesh);
-
   template <typename Vertices>
-  void updateVertices(Vertices& vertices, const Eigen::Isometry3f* = nullptr) const;
+  void updateVertices(Vertices& vertices) const;
 
   template <typename Faces>
   void updateFaces(Faces& faces) const;
 
   template <typename Vertices, typename Faces>
-  void updateMesh(Vertices& vertices,
-                  Faces& faces,
-                  const Eigen::Isometry3f* transform = nullptr) const;
+  void updateMesh(Vertices& vertices, Faces& faces) const;
 
   template <typename Mesh>
-  void updateMesh(Mesh& mesh, const Eigen::Isometry3f* transform = nullptr) const;
+  void updateMesh(Mesh& mesh) const;
 
   void updateVertices(pcl::PointCloud<pcl::PointXYZRGBA>& vertices,
                       std::vector<Timestamp>* stamps,
-                      std::vector<uint32_t>* semantics = nullptr,
-                      const Eigen::Isometry3f* transform = nullptr) const;
+                      std::vector<uint32_t>* semantics = nullptr) const;
 
   void updateMesh(pcl::PointCloud<pcl::PointXYZRGBA>& vertices,
                   std::vector<Timestamp>& stamps,
                   std::vector<pcl::Vertices>& faces,
-                  std::vector<uint32_t>* semantics = nullptr,
-                  const Eigen::Isometry3f* transform = nullptr) const;
+                  std::vector<uint32_t>* semantics = nullptr) const;
 
   size_t addVertex(Timestamp timestamp_ns,
                    const pcl::PointXYZRGBA& point,
@@ -100,10 +87,6 @@ class MeshDelta {
   size_t getTotalArchivedVertices() const;
 
   size_t getTotalArchivedFaces() const;
-
-  size_t getTotalVertices() const;
-
-  size_t getTotalFaces() const;
 
   size_t getLocalIndex(size_t index) const;
 
@@ -138,8 +121,7 @@ class MeshDelta {
 std::ostream& operator<<(std::ostream& out, const MeshDelta& delta);
 
 template <typename Vertices>
-void MeshDelta::updateVertices(Vertices& vertices,
-                               const Eigen::Isometry3f* transform) const {
+void MeshDelta::updateVertices(Vertices& vertices) const {
   const bool use_semantics = hasSemantics();
   const size_t total_vertices = vertex_start + vertex_updates->size();
   traits::resize_vertices(vertices, total_vertices);
@@ -147,16 +129,11 @@ void MeshDelta::updateVertices(Vertices& vertices,
   for (size_t i = 0; i < vertex_updates->size(); ++i) {
     const size_t idx = i + vertex_start;
     const auto& p = vertex_updates->at(i);
-    traits::Pos pos;
-    if (transform) {
-      pos = *transform * traits::Pos(p.x, p.y, p.z);
-    } else {
-      pos = traits::Pos(p.x, p.y, p.z);
-    }
+    const traits::Pos pos(p.x, p.y, p.z);
     traits::VertexTraits traits;
     traits.color = {p.r, p.g, p.b, p.a};
     traits.stamp = stamp_updates.at(i);
-    if (use_semantics && i < semantic_updates.size()) {
+    if (use_semantics) {
       traits.label = semantic_updates.at(i);
     }
     traits::set_vertex(vertices, idx, pos, traits);
@@ -182,96 +159,15 @@ void MeshDelta::updateFaces(Faces& faces) const {
 }
 
 template <typename Vertices, typename Faces>
-void MeshDelta::updateMesh(Vertices& vertices,
-                           Faces& faces,
-                           const Eigen::Isometry3f* transform) const {
-  updateVertices<Vertices>(vertices, transform);
+void MeshDelta::updateMesh(Vertices& vertices, Faces& faces) const {
+  updateVertices<Vertices>(vertices);
   updateFaces<Faces>(faces);
 }
 
 template <typename Mesh>
-void MeshDelta::updateMesh(Mesh& mesh, const Eigen::Isometry3f* transform) const {
+void MeshDelta::updateMesh(Mesh& mesh) const {
   // dispatch for types implementing faces and vertices adl api
-  updateMesh(mesh, mesh, transform);
-}
-
-template <typename Vertices, typename Faces>
-MeshDelta::Ptr MeshDelta::fromMesh(const Vertices& vertices, const Faces& faces) {
-  auto delta = std::make_shared<MeshDelta>(0, 0);
-
-  const auto num_vertices = traits::num_vertices(vertices);
-  for (size_t i = 0; i < num_vertices; ++i) {
-    traits::VertexTraits traits;
-    const auto pos = traits::get_vertex(vertices, i, &traits);
-    auto& point = delta->vertex_updates->emplace_back();
-    point.x = pos.x();
-    point.y = pos.y();
-    point.z = pos.z();
-    if (traits.color) {
-      const auto& c = *traits.color;
-      point.r = c[0];
-      point.g = c[1];
-      point.b = c[2];
-      point.a = c[3];
-    }
-
-    if (traits.stamp) {
-      delta->stamp_updates.push_back(*traits.stamp);
-    }
-
-    if (traits.label) {
-      delta->semantic_updates.push_back(*traits.label);
-    }
-  }
-
-  const auto num_faces = traits::num_faces(faces);
-  for (size_t i = 0; i < num_faces; ++i) {
-    delta->face_updates.push_back(traits::get_face(faces, i));
-  }
-
-  return delta;
-}
-
-template <typename Mesh>
-MeshDelta::Ptr MeshDelta::fromMesh(const Mesh& mesh) {
-  return fromMesh(mesh, mesh);
-}
-
-inline size_t pgmoNumVertices(const MeshDelta& delta) {
-  return delta.vertex_updates ? delta.vertex_updates->size() : 0;
-}
-
-inline traits::Pos pgmoGetVertex(const MeshDelta& delta,
-                                 size_t i,
-                                 traits::VertexTraits* traits) {
-  const auto& point = delta.vertex_updates->at(i);
-  traits::Pos pos(point.x, point.y, point.z);
-  if (!traits) {
-    return pos;
-  }
-
-  traits->color = {point.r, point.g, point.b, point.a};
-  if (i <= delta.stamp_updates.size()) {
-    traits->stamp = delta.stamp_updates[i];
-  }
-
-  if (i <= delta.semantic_updates.size()) {
-    traits->label = delta.semantic_updates[i];
-  }
-  return pos;
-}
-
-inline size_t pgmoNumFaces(const MeshDelta& delta) {
-  return delta.face_updates.size() + delta.face_archive_updates.size();
-}
-
-inline traits::Face pgmoGetFace(const MeshDelta& delta, size_t i) {
-  if (i < delta.face_archive_updates.size()) {
-    return delta.face_archive_updates[i];
-  }
-
-  i -= delta.face_archive_updates.size();
-  return delta.face_updates.at(i);
+  updateMesh(mesh, mesh);
 }
 
 }  // namespace kimera_pgmo

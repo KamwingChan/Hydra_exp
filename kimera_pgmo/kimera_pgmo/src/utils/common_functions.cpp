@@ -153,8 +153,8 @@ void AppendMesh(pcl::PointCloud<pcl::PointXYZRGBA>::Ptr mesh_vertices,
 }
 
 bool PolygonsEqual(const pcl::Vertices& p1, const pcl::Vertices& p2) {
-  auto p1_v = p1.vertices;
-  auto p2_v = p2.vertices;
+  std::vector<uint32_t> p1_v = p1.vertices;
+  std::vector<uint32_t> p2_v = p2.vertices;
   if (p1_v.size() != p2_v.size()) return false;
   for (size_t i = 0; i < p1_v.size(); i++) {
     std::rotate(p1_v.begin(), p1_v.begin() + 1, p1_v.end());

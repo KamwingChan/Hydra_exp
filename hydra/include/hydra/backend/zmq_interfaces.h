@@ -78,9 +78,9 @@ class ZmqRoomLabelUpdater : public UpdateFunctor {
 
   ZmqRoomLabelUpdater(const Config& config);
   virtual ~ZmqRoomLabelUpdater();
-  void call(const DynamicSceneGraph&,
-            SharedDsgInfo& graph,
-            const UpdateInfo::ConstPtr&) const override;
+  MergeList call(const DynamicSceneGraph&,
+                 SharedDsgInfo& graph,
+                 const UpdateInfo::ConstPtr&) const override;
 
  private:
   void checkForUpdates();

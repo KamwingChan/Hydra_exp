@@ -224,7 +224,7 @@ Measurement ProjectiveIntegrator::getVoxelMeasurement(const MapConfig& map_confi
   }
 
   // Get associated semantic label if applicable and check if it can be integrated
-  if (!computeLabel(map_config, data, measurement)) {
+  if (!computeLabel(data, map_config.truncation_distance, measurement)) {
     return measurement;
   }
 
@@ -340,10 +340,10 @@ float ProjectiveIntegrator::computeWeight(const MapConfig& map_config,
   return weight;
 }
 
-bool ProjectiveIntegrator::computeLabel(const MapConfig& map_config,
-                                        const InputData& data,
+bool ProjectiveIntegrator::computeLabel(const InputData& data,
+                                        const float truncation_distance,
                                         Measurement& measurement) const {
-  if (std::abs(measurement.sdf) >= map_config.truncation_distance) {
+  if (std::abs(measurement.sdf) >= truncation_distance) {
     // If SDF value is beyond the truncation band, we don't need to
     // compute a label and the point is always valid for integration
     return true;

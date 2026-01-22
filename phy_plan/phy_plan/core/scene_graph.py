@@ -1,5 +1,5 @@
 """
-scene_graph.py: 统一场景图接口
+scene_graph.py: unified scene graph interface
 
 abstract the scene graph from different sources (phy_graph JSON / Hydra DSG),
 provide a unified query interface for planner and visualization.
@@ -18,7 +18,7 @@ class BoundingBox:
     
     @property
     def center(self) -> List[float]:
-        """包围盒中心点"""
+        """bounding box center point"""
         return [
             (self.min_point[0] + self.max_point[0]) / 2,
             (self.min_point[1] + self.max_point[1]) / 2,
@@ -27,7 +27,7 @@ class BoundingBox:
     
     @property
     def dimensions(self) -> List[float]:
-        """包围盒尺寸 [width, depth, height]"""
+        """bounding box dimensions [width, depth, height]"""
         return [
             self.max_point[0] - self.min_point[0],
             self.max_point[1] - self.min_point[1],
@@ -42,7 +42,7 @@ class BoundingBox:
     
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> Optional["BoundingBox"]:
-        """从字典创建 BoundingBox"""
+        """create BoundingBox from dictionary"""
         if not d or "min" not in d or "max" not in d:
             return None
         min_pt = d["min"]
@@ -55,11 +55,13 @@ class BoundingBox:
 
 @dataclass
 class PhysicalProperties:
-    """物体物理属性（由 phy_graph 推断）"""
-    friction_level: int = 1        # 摩擦等级 0-2
-    pushable: bool = True          # 是否可推动
-    weight_level: int = 1          # 重量等级 0-2
-    description: str = ""          # 物体描述
+    """physical properties of the object (inferred from phy_graph)"""
+    friction_level: int = 1              # friction level 0-2
+    pushable: bool = True                # whether the object is pushable
+    weight_level: int = 1                # weight level 0-2
+    description: str = ""                # object description
+    estimated_weight_kg: str = ""        # estimated weight range (e.g. "5-10")
+    inference_confidence: int = -1       # inference confidence (image score 0-100)
     
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "PhysicalProperties":
@@ -69,20 +71,22 @@ class PhysicalProperties:
             friction_level=d.get("friction_level", 1),
             pushable=d.get("pushable", True),
             weight_level=d.get("weight_level", 1),
-            description=d.get("description", "")
+            description=d.get("description", ""),
+            estimated_weight_kg=d.get("estimated_weight_kg", ""),
+            inference_confidence=d.get("inference_confidence", -1)
         )
 
 
 @dataclass
 class ObjectNode:
-    """物体节点"""
-    node_id: str                   # 如 "O(13)"
-    category: str                  # 物体类别，如 "chair", "table"
+    """object node"""
+    node_id: str                   # e.g. "O(13)"
+    category: str                  # object category, e.g. "chair", "table"
     position: List[float]          # [x, y, z]
     orientation: Optional[List[float]] = None  # [roll, pitch, yaw]
     bounding_box: Optional[BoundingBox] = None
     physical_properties: Optional[PhysicalProperties] = None
-    room_id: Optional[str] = None  # 所属房间 ID
+    room_id: Optional[str] = None  # room ID
     
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -93,12 +97,17 @@ class ObjectNode:
         if self.bounding_box:
             result["bounding_box"] = self.bounding_box.to_dict()
         if self.physical_properties:
-            result["physical_properties"] = {
+            props = {
                 "friction_level": self.physical_properties.friction_level,
                 "pushable": self.physical_properties.pushable,
                 "weight_level": self.physical_properties.weight_level,
                 "description": self.physical_properties.description
             }
+            if self.physical_properties.estimated_weight_kg:
+                props["estimated_weight_kg"] = self.physical_properties.estimated_weight_kg
+            if self.physical_properties.inference_confidence >= 0:
+                props["inference_confidence"] = self.physical_properties.inference_confidence
+            result["physical_properties"] = props
         if self.room_id:
             result["room_id"] = self.room_id
         if self.orientation:
@@ -115,7 +124,7 @@ class ObjectNode:
     
     @classmethod
     def from_dict(cls, d: Dict[str, Any], room_id: Optional[str] = None) -> "ObjectNode":
-        """从 phy_graph JSON 格式创建"""
+        """create ObjectNode from phy_graph JSON format"""
         pos = d.get("position", {})
         position = [pos.get("x", 0), pos.get("y", 0), pos.get("z", 0)]
         
@@ -139,11 +148,11 @@ class ObjectNode:
 
 @dataclass
 class RoomNode:
-    """房间节点"""
-    room_id: str                   # 如 "R(0)"
-    category: str                  # 房间类别，如 "LivingRoom", "DiningRoom"
-    centroid: Optional[List[float]] = None  # 房间中心 [x, y, z]
-    object_ids: List[str] = field(default_factory=list)  # 包含的物体 ID 列表
+    """room node"""
+    room_id: str                   # e.g. "R(0)"
+    category: str                  # room category, e.g. "LivingRoom", "DiningRoom"
+    centroid: Optional[List[float]] = None  # room center [x, y, z]
+    object_ids: List[str] = field(default_factory=list)  # list of object IDs
     description: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
@@ -176,7 +185,7 @@ class RoomNode:
 @dataclass
 class PlaceGvdNode:
     """place node in GVD"""
-    place_id: int                   # 如 1             # 位置类别，如 "LivingRoom", "DiningRoom"
+    place_id: int                   # e.g. 1             # location category, e.g. "LivingRoom", "DiningRoom"
     centroid: List[float]          # [x, y, z]
     distance: float
 
@@ -195,9 +204,9 @@ class PlaceGvdGraph:
 
 class SceneGraph:
     """
-    统一场景图接口
+    unified scene graph interface
     
-    封装 phy_graph 或 hydra 输出的场景图，提供统一查询接口。
+    encapsulate scene graph output from phy_graph or hydra, provide unified query interface.
     """
     
     def __init__(self):
@@ -211,62 +220,69 @@ class SceneGraph:
     # ==================== 查询接口 ====================
     
     def get_object(self, node_id: str) -> Optional[ObjectNode]:
-        """根据 ID 获取物体"""
+        """get object by ID"""
         return self.objects.get(node_id)
     
     def get_objects_by_category(self, category: str) -> List[ObjectNode]:
-        """根据类别获取物体列表"""
+        """get objects by category"""
         return [obj for obj in self.objects.values() if obj.category.lower() == category.lower()]
     
     def get_objects_in_room(self, room_id: str) -> List[ObjectNode]:
-        """获取房间内的所有物体"""
+        """get all objects in the room"""
         room = self.rooms.get(room_id)
         if not room:
             return []
         return [self.objects[oid] for oid in room.object_ids if oid in self.objects]
     
     def get_room(self, room_id: str) -> Optional[RoomNode]:
-        """根据 ID 获取房间"""
+        """get room by ID"""
         return self.rooms.get(room_id)
     
     def get_rooms_by_category(self, category: str) -> List[RoomNode]:
-        """根据类别获取房间列表"""
+        """get rooms by category"""
         return [room for room in self.rooms.values() if room.category.lower() == category.lower()]
     
     def all_objects(self) -> List[ObjectNode]:
-        """获取所有物体"""
+        """get all objects"""
         return list(self.objects.values())
     
     def all_rooms(self) -> List[RoomNode]:
-        """获取所有房间"""
+        """get all rooms"""
         return list(self.rooms.values())
     
     def get_gvd_graph(self) -> Optional[PlaceGvdGraph]:
-        """获取 GVD 图"""
+        """get GVD graph"""
         return self.gvd_graph
     # ==================== 转换接口 ====================
     
     def to_compact_json(self) -> str:
         """
-        生成 compact 格式 JSON（用于 LLM 上下文）
-        只包含 node_id, category, room_id
+        generate compact format JSON (for LLM context)
+        only contains node_id, category, room_id
         """
         compact = {
             "rooms": [],
             "objects": []
         }
         for room in self.rooms.values():
-            compact["rooms"].append({
+            room_data = {
                 "room_id": room.room_id,
                 "category": room.category,
                 "object_ids": room.object_ids
-            })
+            }
+            if room.centroid:
+                room_data["centroid"] = {
+                    "x": room.centroid[0],
+                    "y": room.centroid[1],
+                    "z": room.centroid[2]
+                }
+            compact["rooms"].append(room_data)
         for obj in self.objects.values():
             compact["objects"].append(obj.to_compact())
         return json.dumps(compact, indent=2, ensure_ascii=False)
     
     def to_dict(self) -> Dict[str, Any]:
-        """转换为完整字典格式"""
+        """convert to complete dictionary format"""
         return {
             "timestamp": self.timestamp,
             "source": self.source,
@@ -276,31 +292,31 @@ class SceneGraph:
         }
     
     def to_json(self, indent: int = 2) -> str:
-        """转换为 JSON 字符串"""
+        """convert to JSON string"""
         return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
     
     def to_verbose_description(self, include_objects: bool = True) -> str:
         """
-        生成自然语言描述（用于 LLM prompt）
+        generate natural language description (for LLM prompt)
         
-        参考 context-matters 的 get_verbose_scene_graph() 设计。
+        reference context-matters's get_verbose_scene_graph() design.
         
         Args:
-            include_objects: 是否包含物体详细列表
+            include_objects: whether to include detailed object list
             
         Returns:
-            场景的自然语言描述
+            natural language description of the scene
         """
         lines = []
         
-        # 房间概览
+        # room overview
         room_labels = [f"{r.category}({r.room_id})" for r in self.rooms.values()]
         if room_labels:
             lines.append(f"The scene contains {len(self.rooms)} rooms: {', '.join(room_labels)}.")
         else:
             lines.append("The scene has no defined rooms.")
         
-        # 每个房间的内容
+        # content of each room
         if include_objects:
             for room in self.rooms.values():
                 objects_in_room = self.get_objects_in_room(room.room_id)
@@ -310,13 +326,13 @@ class SceneGraph:
                 else:
                     lines.append(f"The {room.category}({room.room_id}) has no objects.")
             
-            # 未分配房间的物体
+            # objects without room assignment
             orphan_objects = [obj for obj in self.objects.values() if not obj.room_id]
             if orphan_objects:
                 obj_list = [f"{obj.category}({obj.node_id})" for obj in orphan_objects]
                 lines.append(f"Objects without room assignment: {', '.join(obj_list)}.")
         
-        # 物体统计
+        # object statistics
         category_counts: Dict[str, int] = {}
         for obj in self.objects.values():
             cat = obj.category
@@ -328,7 +344,7 @@ class SceneGraph:
         
         return "\n".join(lines)
     
-    # ==================== 统计信息 ====================
+    # ==================== statistics ====================
     
     def summary(self) -> str:
         """生成场景图摘要"""
@@ -341,7 +357,7 @@ class SceneGraph:
             "Categories:"
         ]
         
-        # 统计物体类别
+        # count object categories
         category_counts: Dict[str, int] = {}
         for obj in self.objects.values():
             cat = obj.category

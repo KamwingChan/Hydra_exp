@@ -63,9 +63,13 @@ void streamDedgeFactor(const DeformationEdgeFactor& dedge, std::ofstream& stream
     throw std::invalid_argument("DeformationGraph save: invalid noise model. ");
   }
   gtsam::Matrix3 Info = gaussianModel->R().transpose() * gaussianModel->R();
-  const gtsam::Point3 measurement = dedge.measurement();
-  stream << dedge.key1() << " " << dedge.key2() << " " << measurement.x() << " "
-         << measurement.y() << " " << measurement.z();
+  const gtsam::Pose3 from = dedge.fromPose();
+  const gtsam::Point3 p = from.translation();
+  const auto q = from.rotation().toQuaternion();
+  const gtsam::Point3 to = dedge.toPoint();
+  stream << dedge.key1() << " " << dedge.key2() << " " << p.x() << " " << p.y() << " "
+         << p.z() << " " << q.x() << " " << q.y() << " " << q.z() << " " << q.w() << " "
+         << to.x() << " " << to.y() << " " << to.z();
 
   for (size_t i = 0; i < 3; i++) {
     for (size_t j = i; j < 3; j++) {
@@ -194,9 +198,7 @@ gtsam::Key rekey(gtsam::Symbol key, size_t robot_id) {
 void DeformationGraph::load(const std::string& filename,
                             bool include_temp,
                             bool set_robot_id,
-                            size_t new_robot_id,
-                            bool include_priors,
-                            bool optimize_on_load) {
+                            size_t new_robot_id) {
   gtsam::Values new_vals, new_temp_vals;
   gtsam::NonlinearFactorGraph new_factors, new_temp_factors;
 
@@ -258,9 +260,9 @@ void DeformationGraph::load(const std::string& filename,
       }
     } else if (tag == "DEDGE" || tag == "DEDGE_TEMP") {
       size_t key1, key2;
-      double x, y, z;
+      double x, y, z, qx, qy, qz, qw, to_x, to_y, to_z;
       gtsam::Matrix3 m;
-      ss >> key1 >> key2 >> x >> y >> z;
+      ss >> key1 >> key2 >> x >> y >> z >> qx >> qy >> qz >> qw >> to_x >> to_y >> to_z;
       for (size_t i = 0; i < 3; i++) {
         for (size_t j = i; j < 3; j++) {
           double e_ij;
@@ -275,16 +277,17 @@ void DeformationGraph::load(const std::string& filename,
         gtsam_key1 = rekey(key1, new_robot_id);
         gtsam_key2 = rekey(key2, new_robot_id);
       }
-      gtsam::Point3 measurement(x, y, z);
+      gtsam::Pose3 from_pose(gtsam::Rot3(qw, qx, qy, qz), gtsam::Point3(x, y, z));
+      gtsam::Point3 to_point(to_x, to_y, to_z);
       gtsam::SharedNoiseModel noise = gtsam::noiseModel::Gaussian::Information(m);
       if (tag == "DEDGE") {
         new_factors.add(
-            DeformationEdgeFactor(gtsam_key1, gtsam_key2, measurement, noise));
+            DeformationEdgeFactor(gtsam_key1, gtsam_key2, from_pose, to_point, noise));
         consistency_factors_.add(
-            DeformationEdgeFactor(gtsam_key1, gtsam_key2, measurement, noise));
+            DeformationEdgeFactor(gtsam_key1, gtsam_key2, from_pose, to_point, noise));
       } else if (include_temp) {
         new_temp_factors.add(
-            DeformationEdgeFactor(gtsam_key1, gtsam_key2, measurement, noise));
+            DeformationEdgeFactor(gtsam_key1, gtsam_key2, from_pose, to_point, noise));
       }
     } else if (tag == "PRIOR") {
       size_t key;
@@ -299,17 +302,13 @@ void DeformationGraph::load(const std::string& filename,
           m(j, i) = e_ij;
         }
       }
-
-      if (include_priors) {
-        gtsam::Symbol gtsam_key(key);
-        if (set_robot_id) {
-          gtsam_key = rekey(gtsam_key, new_robot_id);
-        }
-
-        gtsam::Pose3 meas(gtsam::Rot3(qw, qx, qy, qz), gtsam::Point3(x, y, z));
-        gtsam::SharedNoiseModel noise = gtsam::noiseModel::Gaussian::Information(m);
-        new_factors.add(gtsam::PriorFactor<gtsam::Pose3>(gtsam_key, meas, noise));
+      gtsam::Symbol gtsam_key(key);
+      if (set_robot_id) {
+        gtsam_key = rekey(gtsam_key, new_robot_id);
       }
+      gtsam::Pose3 meas(gtsam::Rot3(qw, qx, qy, qz), gtsam::Point3(x, y, z));
+      gtsam::SharedNoiseModel noise = gtsam::noiseModel::Gaussian::Information(m);
+      new_factors.add(gtsam::PriorFactor<gtsam::Pose3>(gtsam_key, meas, noise));
     } else if (tag == "VERTEX") {
       size_t key;
       double x, y, z;
@@ -332,20 +331,12 @@ void DeformationGraph::load(const std::string& filename,
       std::invalid_argument("DeformationGraph load: unknown tag. ");
     }
   }
-
-  if (optimize_on_load) {
-    pgo_->updateTempFactorsValues(new_temp_factors, new_temp_vals);
-    pgo_->update(new_factors, new_vals);
-    values_ = pgo_->calculateEstimate();
-    nfg_ = pgo_->getFactorsUnsafe();
-    temp_nfg_ = pgo_->getTempFactorsUnsafe();
-    temp_values_ = pgo_->getTempValues();
-  } else {
-    values_ = new_vals;
-    nfg_ = new_factors;
-    temp_nfg_ = new_temp_factors;
-    temp_values_ = new_temp_vals;
-  }
+  pgo_->updateTempFactorsValues(new_temp_factors, new_temp_vals);
+  pgo_->update(new_factors, new_vals);
+  values_ = pgo_->calculateEstimate();
+  nfg_ = pgo_->getFactorsUnsafe();
+  temp_nfg_ = pgo_->getTempFactorsUnsafe();
+  temp_values_ = pgo_->getTempValues();
 }
 
 }  // namespace kimera_pgmo

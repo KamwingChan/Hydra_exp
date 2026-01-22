@@ -81,11 +81,11 @@ void UpdateRoomsFunctor::rewriteRooms(const SceneGraphLayer* new_rooms,
   }
 }
 
-void UpdateRoomsFunctor::call(const DynamicSceneGraph&,
-                              SharedDsgInfo& dsg,
-                              const UpdateInfo::ConstPtr& info) const {
+MergeList UpdateRoomsFunctor::call(const DynamicSceneGraph&,
+                                   SharedDsgInfo& dsg,
+                                   const UpdateInfo::ConstPtr& info) const {
   if (!room_finder) {
-    return;
+    return {};
   }
 
   ScopedTimer timer("backend/room_detection", info->timestamp_ns, true, 1, false);
@@ -98,7 +98,7 @@ void UpdateRoomsFunctor::call(const DynamicSceneGraph&,
   auto rooms = room_finder->findRooms(*places_clone);
   rewriteRooms(rooms.get(), *dsg.graph);
   room_finder->addRoomPlaceEdges(*dsg.graph);
-  return;
+  return {};
 }
 
 }  // namespace hydra

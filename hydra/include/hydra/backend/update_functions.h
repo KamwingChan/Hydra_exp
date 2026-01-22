@@ -77,9 +77,9 @@ struct UpdateFunctor {
 
   virtual ~UpdateFunctor() = default;
   virtual Hooks hooks() const;
-  virtual void call(const DynamicSceneGraph& unmerged,
-                    SharedDsgInfo& dsg,
-                    const UpdateInfo::ConstPtr& info) const = 0;
+  virtual MergeList call(const DynamicSceneGraph& unmerged,
+                         SharedDsgInfo& dsg,
+                         const UpdateInfo::ConstPtr& info) const = 0;
   virtual MergeList findMerges(const DynamicSceneGraph& graph,
                                const UpdateInfo::ConstPtr& info) const;
 };

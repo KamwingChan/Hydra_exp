@@ -5,7 +5,7 @@ map_window:
 active_window:
   volumetric_map:
     voxels_per_side: 16
-    voxel_size: 0.03
+    voxel_size: 0.05
     truncation_distance: 0.12
   tsdf:
     semantic_integrator:
@@ -13,11 +13,11 @@ active_window:
 frontend:
   pgmo:
     time_horizon: 15.0
-    d_graph_resolution: 1.0 #2.5
-    mesh_resolution: 0.005
+    d_graph_resolution: 2.5
+    mesh_resolution: 0.015
   objects:
-    min_cluster_size: 5
-    cluster_tolerance: 0.35
+    min_cluster_size: 40
+    cluster_tolerance: 0.15
   surface_places:
     type: place_2d
     prefix: P
@@ -35,7 +35,7 @@ frontend:
     filter_ground: false
     gvd:
       max_distance_m: 4.5
-      min_distance_m: 0.05
+      min_distance_m: 0.10
       min_diff_m: 0.1
       voronoi_config:
         mode: L1_THEN_ANGLE

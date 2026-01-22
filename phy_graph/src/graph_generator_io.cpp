@@ -149,6 +149,8 @@ PhysicalProperties GraphGenerator::parseObjectJson(const std::string& filepath) 
     props.pushable = j.value("pushable", false);
     props.weight_level = j.value("weight_level", -1);
     props.description = j.value("description", std::string{});
+    props.estimated_weight_kg = j.value("estimated_weight_kg", std::string{});
+    props.inference_confidence = j.value("inference_confidence", -1);
     return props;
 }
 
@@ -195,12 +197,20 @@ std::string GraphGenerator::saveSceneGraphJson(const SceneGraph& scene_graph) {
         o["node_id"] = nodeIdToString(obj.node_id);
         o["category"] = obj.category;
         if (!obj.properties.description.empty()) {
-            o["physical_properties"] = {
+            nlohmann::json props = {
                 {"friction_level", obj.properties.friction_level},
                 {"pushable", obj.properties.pushable},
                 {"weight_level", obj.properties.weight_level},
                 {"description", obj.properties.description},
             };
+            // Add new fields if available
+            if (!obj.properties.estimated_weight_kg.empty()) {
+                props["estimated_weight_kg"] = obj.properties.estimated_weight_kg;
+            }
+            if (obj.properties.inference_confidence >= 0) {
+                props["inference_confidence"] = obj.properties.inference_confidence;
+            }
+            o["physical_properties"] = std::move(props);
         }
         o["position"] = vec3Json(obj.position);
         o["bounding_box"] = {

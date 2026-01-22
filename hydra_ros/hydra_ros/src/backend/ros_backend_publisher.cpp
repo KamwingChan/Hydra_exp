@@ -100,14 +100,14 @@ void RosBackendPublisher::publishPoseGraph(const DynamicSceneGraph& graph,
   const auto& prefix = GlobalInfo::instance().getRobotPrefix();
   const auto& agent = graph.getLayer(DsgLayers::AGENTS, prefix.key);
 
-  std::map<size_t, std::vector<size_t>> id_timestamps;
-  id_timestamps[prefix.id] = std::vector<size_t>();
+  std::map<size_t, std::vector<kimera_pgmo::Timestamp>> id_timestamps;
+  id_timestamps[prefix.id] = std::vector<kimera_pgmo::Timestamp>();
   auto& times = id_timestamps[prefix.id];
   for (const auto& node : agent.nodes()) {
     times.push_back(node->timestamp.value().count());
   }
 
-  const auto pose_graph = *dgraph.getPoseGraph(id_timestamps, false, true);
+  const auto pose_graph = *dgraph.getPoseGraph(id_timestamps);
   const auto map_frame = GlobalInfo::instance().getFrames().map;
   auto pose_graph_msg = pose_graph_tools::toMsg(pose_graph);
   pose_graph_msg.header.frame_id = map_frame;
@@ -116,8 +116,8 @@ void RosBackendPublisher::publishPoseGraph(const DynamicSceneGraph& graph,
 
 void RosBackendPublisher::publishMeshGraph(const DynamicSceneGraph&,
                                            const DeformationGraph& dgraph) const {
-  std::map<size_t, std::vector<size_t>> id_timestamps_temp;
-  const auto mesh_graph = *dgraph.getPoseGraph(id_timestamps_temp, true, false);
+  std::map<size_t, std::vector<kimera_pgmo::Timestamp>> id_timestamps_temp;
+  const auto mesh_graph = *dgraph.getPoseGraph(id_timestamps_temp);
   const auto map_frame = GlobalInfo::instance().getFrames().map;
   auto mesh_graph_msg = pose_graph_tools::toMsg(mesh_graph);
   mesh_graph_msg.header.frame_id = map_frame;

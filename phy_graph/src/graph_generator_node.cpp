@@ -1,6 +1,7 @@
 #include <phy_graph/graph_generator.h>
 #include <phy_graph/room_classifier.h>
 #include <ros/package.h>
+#include <std_msgs/String.h>
 #include <sstream>
 #include <fstream>
 #include <iomanip>
@@ -27,7 +28,11 @@ GraphGenerator::GraphGenerator(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     room_classifier_ = std::make_unique<RoomClassifier>();
     room_classifier_->loadConfig(pnh_);
     
+    // Initialize ROS publisher for scene graph
+    scene_graph_pub_ = nh_.advertise<std_msgs::String>("/phy_graph/scene_graph_full", 1);
+    
     ROS_INFO("GraphGenerator initialized. Output directory: %s", output_dir_.c_str());
+    ROS_INFO("Scene graph publisher initialized on topic: /phy_graph/scene_graph_full");
 }
 
 GraphGenerator::~GraphGenerator() {}
@@ -68,14 +73,26 @@ void GraphGenerator::processDsg(const hydra::DynamicSceneGraph::Ptr& graph) {
         // Build scene graph
         SceneGraph scene_graph = buildSceneGraph(graph);
         
-        // Save as JSON (Implementation in graph_generator_io.cpp)
-        // Modified: Now saves to "scene_graph_latest.json" to save space
-        static ros::Time last_save_time = ros::Time(0);
-        if ((ros::Time::now() - last_save_time).toSec() > 10.0) {
+        // Publish scene graph to ROS topic (for phy_plan real-time access)
             std::string saved_path = saveSceneGraphJson(scene_graph);
-            ROS_INFO("Scene graph updated: %s", saved_path.c_str());
-            last_save_time = ros::Time::now();
+        
+        // The saveSceneGraphJson already writes to file, now we also publish via ROS
+        // Read the just-saved file and publish
+        std::ifstream ifs(saved_path);
+        if (ifs.is_open()) {
+            std::string json_content((std::istreambuf_iterator<char>(ifs)),
+                                     std::istreambuf_iterator<char>());
+            ifs.close();
+            
+            std_msgs::String msg;
+            msg.data = json_content;
+            scene_graph_pub_.publish(msg);
+            ROS_INFO("Scene graph published to /phy_graph/scene_graph_full");
+        } else {
+            ROS_WARN("Failed to read saved scene graph file for publishing");
         }
+        
+        ROS_INFO("Scene graph updated: %s", saved_path.c_str());
         
     } catch (const std::exception& e) {
         ROS_ERROR("Failed to process DSG: %s", e.what());

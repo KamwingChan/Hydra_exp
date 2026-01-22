@@ -8,6 +8,7 @@ __New__ (25.11)A big update on Phy_graph, and Phy_plan is coming soon
 
 __New__ (25.12)Available on [BEHAVIOR-1k](https://behavior.stanford.edu/index.html), check the [script](/phy_plan/env) in /phy_plan/env
 
+__New__ (26.01)Phy_plan(alpha) is available now. But big new feature is comming soon.
 ## Follow [Hydra](https://github.com/MIT-SPARK/Hydra/tree/archive/ros_noetic) to finish quick start !!! Choose the ros1 branch!!!
 ```bash
 cd catkin_ws/src
@@ -42,6 +43,16 @@ python ./scripts/rsl_rl/keyboard.py \
     --enable-ros
 ```
 
+Behavior example
+```bash
+roslaunch hydra_ros behavior.launch sim_time_required:=true
+
+//In seperate bash
+conda activate <your isaaclab env>
+cd catkin_ws/src/phy_plan
+python env/behavior_ros.py //check the argument in the file and use WASD to move
+```
+
 ## Future Work
 - [x] Room Classification(Needed Advanced)
 - [x] Continue Mapping Mode
@@ -54,6 +65,9 @@ python ./scripts/rsl_rl/keyboard.py \
 
 - [ ] Scene Graph Based Planning
 - [x] Enhanced Scene Graph via phy_graph
+
+## Phy_plan: High-level task planning using phy_graph
+
 
 ## Developer tools
 ### Using [mmlab](https://github.com/open-mmlab/mmdeploy/blob/main/docs/en/04-supported-codebases/mmdet.md#supported-models)

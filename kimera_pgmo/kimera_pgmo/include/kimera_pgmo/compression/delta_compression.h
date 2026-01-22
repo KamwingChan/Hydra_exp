@@ -9,52 +9,34 @@
 #include "kimera_pgmo/mesh_delta.h"
 #include "kimera_pgmo/utils/common_structs.h"
 #include "kimera_pgmo/utils/mesh_interface.h"
+#include "kimera_pgmo/mesh_traits.h"
 
 namespace kimera_pgmo {
 
-struct RedunancyChecker;
-
-//! @brief Tracking info for every vertex
 struct VertexInfo {
-  //! @brief Last timestamp vertex was updated
-  uint64_t timestamp_ns;
-  //! @brief Current vertex position and color
-  pcl::PointXYZRGBA point;
-  //! @brief Current vertex semantic label
-  std::optional<uint32_t> label;
-  //! @brief Current vertex index in integrated mesh
-  size_t mesh_index;
-  //! @brief Was the vertex newly observed this pass
   bool is_new = true;
-  //! @brief Last integration pass the vertex was updated
-  uint16_t sequence_number = 0;
-  //! @brief Number of active blocks pointing at the vertex
+  uint64_t timestamp_ns;
+  pcl::PointXYZRGBA point;
+  std::optional<uint32_t> label;
+  size_t mesh_index;
   mutable int active_refs = 0;
-  //! @brief Whether or not an archived block is pointing at the vertex
-  mutable bool needs_archive = false;
+  mutable int inactive_refs = 0;
 
-  //! @brief Increment the ref count
   void addObservation() const;
-  //! @brief Decrement the ref count
-  void removeObservation() const;
-  //! @brief Decrement the ref count and mark the vertex for archival
+
   void archiveObservation() const;
-  //! @brief Return if the vertex is no longer observed by any block
+
+  void removeObservation() const;
+
   bool notObserved() const;
-  //! @brief Return whether the vertex is marked for archival and has no active refs
+
   bool shouldArchive() const;
 };
 
-//! @brief Tracking struct for every block in the spatial grid used by the compression
 struct BlockInfo {
-  //! @brief All vertices belonging to the block
   spatial_hash::LongIndexSet vertices;
-  //! @brief Last time the block was updated
-  uint64_t update_time_ns;
-  //! @brief Current flat list of indices
+  uint64_t update_time;
   std::vector<size_t> indices;
-  //! @brief Last integration pass the block was updated
-  uint16_t sequence_number = 0;
 };
 
 class DeltaCompression {
@@ -62,22 +44,11 @@ class DeltaCompression {
   using VoxelInfoMap = LongIndexMap<VertexInfo>;
   using BlockInfoMap = BlockIndexMap<BlockInfo>;
   using Ptr = std::shared_ptr<DeltaCompression>;
-  using BlockFilter =
-      std::function<bool(const spatial_hash::BlockIndex&, const BlockInfo&)>;
 
-  /**
-   * @brief Construct a mesh compressor at the provided spatial resolution
-   */
   explicit DeltaCompression(double resolution);
 
   virtual ~DeltaCompression() = default;
 
-  /**
-   * @brief Integrate a new mesh update into the compressor
-   * @param mesh Newest mesh to integrate
-   * @param timestamp_ns Timestamp the mesh was generated at
-   * @param remapping Optional output remapping between input mesh and integrated mesh
-   */
   MeshDelta::Ptr update(MeshInterface& mesh,
                         uint64_t timestamp_ns,
                         HashedIndexMapping* remapping = nullptr);
@@ -86,34 +57,13 @@ class DeltaCompression {
    * @brief Initialize compression state from an existing loaded mesh
    * @param mesh Previously loaded mesh to initialize from
    * @param timestamp_ns Base timestamp for loaded vertices (default 0)
-   * 
-   * This method allows continue mapping by setting up the compression state
-   * to treat the loaded mesh as archived vertices, so new updates will append
-   * rather than replace the mesh.
    */
   template<typename Mesh>
   void initializeFromLoadedMesh(const Mesh& mesh, uint64_t timestamp_ns = 0);
 
-  /**
-   * @brief Archive blocks that are older than a cutoff time
-   * @param earliest_time_ns Blocks updated before this timestamp will be archived
-   */
-  void archiveBlocksByTime(uint64_t earliest_time_ns);
+  void pruneStoredMesh(uint64_t earliest_time_ns);
 
-  /**
-   * @brief Archive blocks in the provided index list
-   * @param blocks Block indices to archive
-   *
-   * @note Deprecated as spatial grid should be maintained internal to compression
-   */
-  [[deprecated]] void clearArchivedBlocks(const spatial_hash::BlockIndices& blocks);
-
-  /**
-   * @brief Archive blocks in the underlying spatial grid
-   * @param should_archive Filter function that returns true if a block should be
-   * archived
-   */
-  void archiveBlocks(const BlockFilter& should_archive);
+  void clearArchivedBlocks(const spatial_hash::BlockIndices& mesh);
 
  protected:
   void addPoint(const pcl::PointXYZRGBA& point,
@@ -122,17 +72,20 @@ class DeltaCompression {
                 std::vector<size_t>& face_map,
                 spatial_hash::LongIndexSet& curr_voxels);
 
-  void removeBlockObservations(const spatial_hash::LongIndexSet& to_remove);
+  void removeBlockObservations(const spatial_hash::BlockIndex& block_index,
+                               const spatial_hash::LongIndexSet& to_remove);
 
   void addActive(uint64_t stamp_ns, HashedIndexMapping* remapping);
 
   void addActiveFaces(uint64_t timestamp_ns, HashedIndexMapping* remapping);
 
-  void addActiveVertices();
+  void addActiveVertices(uint64_t timestamp_ns);
+
+  void pruneMeshBlocks(const spatial_hash::BlockIndices& to_clear);
 
   void updateAndAddArchivedFaces();
 
-  void archiveBlockFaces(const BlockInfo& block_info, RedunancyChecker& checker);
+  void archiveBlockFaces();
 
   void updateRemapping(MeshInterface& mesh, uint64_t timestamp_ns);
 
@@ -149,79 +102,65 @@ class DeltaCompression {
 
   std::vector<size_t> active_remapping_;
   BlockInfoMap block_info_map_;
+  BlockInfoMap archived_block_info_map_;
   VoxelInfoMap vertices_map_;
 
   std::vector<Face> archived_faces_;
 
-  uint16_t sequence_number_;
+  std::set<uint64_t> timestamp_cache_;
+
   size_t num_archived_vertices_;
   size_t num_archived_faces_;
 };
-
-// Template implementation
+// Template implementation for continue_mapping
 template<typename Mesh>
 void DeltaCompression::initializeFromLoadedMesh(const Mesh& mesh, uint64_t timestamp_ns) {
-  // Set archived vertex and face counts from loaded mesh
-  // These act as baseline offsets for all future mesh deltas
-  num_archived_vertices_ = traits::num_vertices(mesh);
-  num_archived_faces_ = traits::num_faces(mesh);
+  num_archived_vertices_ = pgmoNumVertices(mesh);
+  num_archived_faces_ = pgmoNumFaces(mesh);
   
   std::cout << "[DeltaCompression] Initialized with " 
             << num_archived_vertices_ << " archived vertices and "
             << num_archived_faces_ << " archived faces" << std::endl;
   
-  // 2. Rebuild voxel mapping for all vertices
-  // Use direct access to avoid optional member (timestamps/labels) issues
   for (size_t i = 0; i < num_archived_vertices_; ++i) {
-    // Get vertex position directly (pass nullptr to avoid optional member access)
-    const auto pos = traits::get_vertex(mesh, i, nullptr);
+    traits::VertexTraits vertex_traits;
+    const auto pos = pgmoGetVertex(mesh, i, &vertex_traits);
     
     pcl::PointXYZRGBA point;
     point.x = pos.x();
     point.y = pos.y();
     point.z = pos.z();
-    point.r = 128;  // Default gray
-    point.g = 128;
-    point.b = 128;
-    point.a = 255;
     
-    // Try to get color if available (safely check size)
-    if (mesh.has_colors && i < mesh.colors.size()) {
-      const auto& c = mesh.color(i);
-      point.r = c.r;
-      point.g = c.g;
-      point.b = c.b;
-      point.a = c.a;
+    if (vertex_traits.color) {
+      point.r = (*vertex_traits.color)[0];
+      point.g = (*vertex_traits.color)[1];
+      point.b = (*vertex_traits.color)[2];
+      point.a = (*vertex_traits.color)[3];
+    } else {
+      point.r = point.g = point.b = 128;
+      point.a = 255;
     }
     
-    // Get label if available (safely check size)
-    std::optional<uint32_t> label;
-    if (mesh.has_labels && i < mesh.labels.size()) {
-      label = mesh.label(i);
-    }
-    
-    // Compute voxel index using same hashing as addPoint
     const spatial_hash::LongIndex voxel_idx(
         std::round(point.x * index_scale_),
         std::round(point.y * index_scale_),
         std::round(point.z * index_scale_)
     );
     
-    // Create vertex info and mark as archived
-    vertices_map_[voxel_idx] = VertexInfo{
-        .timestamp_ns = timestamp_ns,
-        .point = point,
-        .label = label,
-        .mesh_index = i,
-        .is_new = false,
-        .sequence_number = 0,
-        .active_refs = 0,
-        .needs_archive = true  // Mark as archived
-    };
+    VertexInfo info;
+    info.timestamp_ns = timestamp_ns;
+    info.mesh_index = i;
+    info.point = point;
+    info.label = vertex_traits.label;
+    info.is_new = false;
+    vertices_map_[voxel_idx] = info;
+    
+    if (delta_) {
+      delta_->prev_to_curr[i] = i;
+    }
   }
   
   std::cout << "[DeltaCompression] Successfully initialized " 
             << vertices_map_.size() << " voxel mappings" << std::endl;
 }
-
 }  // namespace kimera_pgmo

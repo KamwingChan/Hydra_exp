@@ -178,7 +178,7 @@ void deformPoints(CloudOut& new_points,
     }
 
     if (search_tree.getLeafCount() < k + 1) {
-      SPARK_LOG(DEBUG) << "Not enough valid control points in octree to interpolate";
+      SPARK_LOG(ERROR) << "Not enough valid control points in octree to interpolate";
       if (num_ctrl_pts > 1) {
         k = num_ctrl_pts - 1;
       } else {

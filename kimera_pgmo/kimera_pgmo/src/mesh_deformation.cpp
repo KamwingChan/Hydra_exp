@@ -94,10 +94,10 @@ traits::Pos interpPoint(std::set<size_t>& control_points_seen,
     double w = use_const_weight ? 1 : (1 - std::sqrt(nn_sq_dist[j]) / d_max);
     weight_sum += w;
     auto transform = values.at<gtsam::Pose3>(gtsam::Symbol(prefix, nn_index[j]));
-    const gtsam::Point3 delta =
-        (transform.rotation().rotate(vi - gj) + transform.translation());
+    const auto delta =
+        w * (transform.rotation().rotate(vi - gj) + transform.translation());
 
-    new_point += w * delta;
+    new_point += delta;
     control_points_seen.insert(nn_index[j]);
   }
 

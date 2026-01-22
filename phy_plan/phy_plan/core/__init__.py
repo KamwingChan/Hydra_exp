@@ -1,9 +1,9 @@
 """
-core: 核心数据结构模块
+core: core data structure module
 
-- scene_graph: 统一的场景图接口
-- task: 领域语言定义（Action, TaskSequence）
-- agent: LLM Agent 封装
+- scene_graph: unified scene graph interface
+- task: domain language definition (Action, TaskSequence)
+- agent: LLM Agent wrapper
 """
 
 from .task import Action, ActionType, TaskSequence

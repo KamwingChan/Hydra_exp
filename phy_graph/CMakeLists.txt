@@ -54,6 +54,8 @@ add_executable(phy_graph_node
   src/nodeSub.cpp
   src/imageProcessor.cpp
   src/keyframe_database.cpp
+  src/inference_config.cpp
+  src/inference_queue.cpp
 )
 add_dependencies(phy_graph_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 target_link_libraries(phy_graph_node

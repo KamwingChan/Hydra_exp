@@ -200,8 +200,8 @@ class ProjectiveIntegrator {
    * @brief Compute the semantic label of the given measurement.
    * @returns True if the measurement is valid for integration, false otherwise.
    */
-  virtual bool computeLabel(const VolumetricMap::Config& map_config,
-                            const InputData& data,
+  virtual bool computeLabel(const InputData& data,
+                            const float truncation_distance,
                             VoxelMeasurement& measurement) const;
 
  protected:
@@ -210,5 +210,8 @@ class ProjectiveIntegrator {
 };
 
 void declare_config(ProjectiveIntegrator::Config& config);
+
+// Alias for Khronos compatibility
+using ProjectiveIntegratorConfig = ProjectiveIntegrator::Config;
 
 }  // namespace hydra

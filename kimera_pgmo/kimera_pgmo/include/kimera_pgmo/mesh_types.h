@@ -8,7 +8,6 @@
 #include <Eigen/Dense>
 #include <array>
 #include <cstdint>
-#include <optional>
 #include <unordered_map>
 
 namespace kimera_pgmo {
