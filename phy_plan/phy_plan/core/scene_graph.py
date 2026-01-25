@@ -114,13 +114,46 @@ class ObjectNode:
             result["orientation"] = {"roll": self.orientation[0], "pitch": self.orientation[1], "yaw": self.orientation[2]}
         return result
     
-    def to_compact(self) -> Dict[str, Any]:
-        """convert to compact format (for LLM)"""
-        return {
+    def to_compact(self, include_physics: bool = False, include_position: bool = False) -> Dict[str, Any]:
+        """
+        Convert to compact format (for LLM)
+        
+        Default is minimal format to save tokens. Physical validation is done
+        in backend by PhysicsAwareAgent, not by LLM.
+        
+        Args:
+            include_physics: Include physical properties (weight_level, pushable)
+            include_position: Include object position coordinates
+            
+        Returns:
+            Compact dictionary representation
+        """
+        result = {
             "node_id": self.node_id,
             "category": self.category,
             "room_id": self.room_id
         }
+        
+        # Add position for spatial reasoning (optional, increases token usage)
+        if include_position and self.position:
+            result["position"] = {
+                "x": round(self.position[0], 2),
+                "y": round(self.position[1], 2),
+                "z": round(self.position[2], 2)
+            }
+        
+        # Add physical properties (optional, increases token usage)
+        # Note: Physical validation is done in backend by PhysicsAwareAgent
+        if include_physics and self.physical_properties:
+            phys = self.physical_properties
+            result["physical_properties"] = {
+                "weight_level": phys.weight_level,
+                "pushable": phys.pushable
+            }
+            if phys.estimated_weight_kg:
+                result["physical_properties"]["estimated_weight_kg"] = phys.estimated_weight_kg
+        
+        return result
     
     @classmethod
     def from_dict(cls, d: Dict[str, Any], room_id: Optional[str] = None) -> "ObjectNode":
@@ -253,32 +286,238 @@ class SceneGraph:
     def get_gvd_graph(self) -> Optional[PlaceGvdGraph]:
         """get GVD graph"""
         return self.gvd_graph
+    
+    # ==================== 空间计算接口 ====================
+    
+    @staticmethod
+    def calculate_distance(pos1: List[float], pos2: List[float]) -> float:
+        """
+        Calculate Euclidean distance between two positions
+        
+        Args:
+            pos1: First position [x, y, z] or [x, y]
+            pos2: Second position [x, y, z] or [x, y]
+            
+        Returns:
+            Euclidean distance in meters
+        """
+        import math
+        if len(pos1) < 2 or len(pos2) < 2:
+            return float("inf")
+        
+        dx = pos2[0] - pos1[0]
+        dy = pos2[1] - pos1[1]
+        dz = 0.0
+        if len(pos1) > 2 and len(pos2) > 2:
+            dz = pos2[2] - pos1[2]
+        
+        return math.sqrt(dx*dx + dy*dy + dz*dz)
+    
+    def get_distance_to_room(self, obj_id: str, room_id: str) -> Optional[float]:
+        """
+        Calculate distance from object to room centroid
+        
+        Args:
+            obj_id: Object node ID
+            room_id: Room node ID
+            
+        Returns:
+            Distance in meters, or None if positions unavailable
+        """
+        obj = self.get_object(obj_id)
+        room = self.get_room(room_id)
+        
+        if not obj or not obj.position:
+            return None
+        if not room or not room.centroid:
+            return None
+        
+        return self.calculate_distance(obj.position, room.centroid)
+    
+    def get_distance_between_objects(self, obj_id1: str, obj_id2: str) -> Optional[float]:
+        """
+        Calculate distance between two objects
+        
+        Args:
+            obj_id1: First object node ID
+            obj_id2: Second object node ID
+            
+        Returns:
+            Distance in meters, or None if positions unavailable
+        """
+        obj1 = self.get_object(obj_id1)
+        obj2 = self.get_object(obj_id2)
+        
+        if not obj1 or not obj1.position:
+            return None
+        if not obj2 or not obj2.position:
+            return None
+        
+        return self.calculate_distance(obj1.position, obj2.position)
+    
+    def get_nearest_object(
+        self,
+        reference_point: List[float],
+        category: Optional[str] = None,
+        room_id: Optional[str] = None,
+        exclude_ids: Optional[List[str]] = None
+    ) -> Optional[ObjectNode]:
+        """
+        Find nearest object to a reference point
+        
+        Args:
+            reference_point: [x, y, z] reference position
+            category: Optional category filter
+            room_id: Optional room filter
+            exclude_ids: Object IDs to exclude
+            
+        Returns:
+            Nearest matching object or None
+        """
+        candidates = self.all_objects()
+        
+        # Apply filters
+        if category:
+            category_lower = category.lower()
+            candidates = [obj for obj in candidates if obj.category.lower() == category_lower]
+        
+        if room_id:
+            candidates = [obj for obj in candidates if obj.room_id == room_id]
+        
+        if exclude_ids:
+            exclude_set = set(exclude_ids)
+            candidates = [obj for obj in candidates if obj.node_id not in exclude_set]
+        
+        # Find nearest
+        nearest = None
+        min_distance = float("inf")
+        
+        for obj in candidates:
+            if not obj.position:
+                continue
+            
+            distance = self.calculate_distance(obj.position, reference_point)
+            if distance < min_distance:
+                min_distance = distance
+                nearest = obj
+        
+        return nearest
+    
+    def get_objects_sorted_by_distance(
+        self,
+        reference_point: List[float],
+        category: Optional[str] = None,
+        room_id: Optional[str] = None,
+        limit: Optional[int] = None
+    ) -> List[tuple]:
+        """
+        Get objects sorted by distance to reference point
+        
+        Args:
+            reference_point: [x, y, z] reference position
+            category: Optional category filter
+            room_id: Optional room filter
+            limit: Maximum number of results
+            
+        Returns:
+            List of (ObjectNode, distance) tuples sorted by distance
+        """
+        candidates = self.all_objects()
+        
+        # Apply filters
+        if category:
+            category_lower = category.lower()
+            candidates = [obj for obj in candidates if obj.category.lower() == category_lower]
+        
+        if room_id:
+            candidates = [obj for obj in candidates if obj.room_id == room_id]
+        
+        # Calculate distances
+        with_distances = []
+        for obj in candidates:
+            if obj.position:
+                distance = self.calculate_distance(obj.position, reference_point)
+                with_distances.append((obj, distance))
+        
+        # Sort by distance
+        with_distances.sort(key=lambda x: x[1])
+        
+        if limit:
+            with_distances = with_distances[:limit]
+        
+        return with_distances
+    
+    def get_nearest_room(self, position: List[float]) -> Optional[RoomNode]:
+        """
+        Find nearest room to a position (by centroid)
+        
+        Args:
+            position: [x, y, z] position
+            
+        Returns:
+            Nearest room or None
+        """
+        nearest = None
+        min_distance = float("inf")
+        
+        for room in self.rooms.values():
+            if not room.centroid:
+                continue
+            
+            distance = self.calculate_distance(position, room.centroid)
+            if distance < min_distance:
+                min_distance = distance
+                nearest = room
+        
+        return nearest
+    
     # ==================== 转换接口 ====================
     
-    def to_compact_json(self) -> str:
+    def to_compact_json(
+        self,
+        include_physics: bool = False,
+        include_position: bool = False
+    ) -> str:
         """
-        generate compact format JSON (for LLM context)
-        only contains node_id, category, room_id
+        Generate compact format JSON (for LLM context)
+        
+        Default is minimal format to save tokens. Detailed info is retrieved
+        via candidate enrichment (RAG-like mechanism) when needed.
+        
+        Args:
+            include_physics: Include object physical properties (weight_level, pushable)
+            include_position: Include object and room positions for spatial reasoning
+            
+        Returns:
+            Compact JSON string suitable for LLM prompt
         """
         compact = {
             "rooms": [],
             "objects": []
         }
+        
+        # Add rooms with optional centroid
         for room in self.rooms.values():
             room_data = {
                 "room_id": room.room_id,
                 "category": room.category,
                 "object_ids": room.object_ids
             }
-            if room.centroid:
+            if include_position and room.centroid:
                 room_data["centroid"] = {
-                    "x": room.centroid[0],
-                    "y": room.centroid[1],
-                    "z": room.centroid[2]
+                    "x": round(room.centroid[0], 2),
+                    "y": round(room.centroid[1], 2),
+                    "z": round(room.centroid[2], 2)
                 }
             compact["rooms"].append(room_data)
+        
+        # Add objects with optional physics and position
         for obj in self.objects.values():
-            compact["objects"].append(obj.to_compact())
+            compact["objects"].append(obj.to_compact(
+                include_physics=include_physics,
+                include_position=include_position
+            ))
+        
         return json.dumps(compact, indent=2, ensure_ascii=False)
     
     def to_dict(self) -> Dict[str, Any]:

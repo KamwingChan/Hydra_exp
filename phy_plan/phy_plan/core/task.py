@@ -26,6 +26,19 @@ class ActionType(Enum):
     # perception actions
     OBSERVE = "observe"           # observe/get object information
     LOCATE = "locate"             # locate object
+    # container/door operations
+    OPEN = "open"                 # open container or door (fridge, drawer, cabinet, etc.)
+    CLOSE = "close"               # close container or door
+
+
+class TaskStatus(Enum):
+    """task/action execution status"""
+    PENDING = "pending"           # waiting to start
+    RUNNING = "running"           # currently executing
+    COMPLETED = "completed"       # successfully completed
+    FAILED = "failed"             # execution failed
+    PAUSED = "paused"             # execution paused
+    SKIPPED = "skipped"           # skipped
 
 
 @dataclass
@@ -59,11 +72,18 @@ class Action:
     params: Dict[str, Any] = field(default_factory=dict)  # additional parameters
     description: str = ""                    # action description (for debugging/visualization)
     
+    # execution state
+    status: TaskStatus = field(default=TaskStatus.PENDING)
+    result_message: str = ""                 # execution result/error message
+    start_time: float = 0.0
+    end_time: float = 0.0
+
     def to_dict(self) -> Dict[str, Any]:
         """convert to dictionary format"""
         result = {
             "action_type": self.action_type.value,
             "description": self.description,
+            "status": self.status.value,
         }
         if self.target_object:
             result["target_object"] = self.target_object
@@ -71,6 +91,8 @@ class Action:
             result["target_position"] = self.target_position.to_dict()
         if self.params:
             result["params"] = self.params
+        if self.result_message:
+            result["result_message"] = self.result_message
         return result
     
     @classmethod
@@ -87,12 +109,18 @@ class Action:
                 target_position = Position.from_dict(tp)
         params = d.get("params", {})
         description = d.get("description", "")
+        
+        status = TaskStatus(d.get("status", "pending"))
+        result_message = d.get("result_message", "")
+        
         return cls(
             action_type=action_type,
             target_object=target_object,
             target_position=target_position,
             params=params,
-            description=description
+            description=description,
+            status=status,
+            result_message=result_message
         )
 
 
@@ -103,6 +131,48 @@ class TaskSequence:
     task_name: str = ""                      # task name
     metadata: Dict[str, Any] = field(default_factory=dict)  # metadata
     
+    # execution state
+    status: TaskStatus = field(default=TaskStatus.PENDING)
+    current_action_index: int = 0
+    error_message: str = ""
+    
+    @property
+    def progress(self) -> float:
+        """calculate progress (0.0-1.0)"""
+        if not self.actions:
+            return 0.0
+        if self.status == TaskStatus.COMPLETED:
+            return 1.0
+        # count completed actions
+        completed = sum(1 for a in self.actions if a.status == TaskStatus.COMPLETED)
+        return completed / len(self.actions)
+
+    def current_action(self) -> Optional[Action]:
+        """get current action"""
+        if 0 <= self.current_action_index < len(self.actions):
+            return self.actions[self.current_action_index]
+        return None
+
+    def mark_current_action_complete(self, message: str = ""):
+        """mark current action as complete and advance"""
+        action = self.current_action()
+        if action:
+            action.status = TaskStatus.COMPLETED
+            action.result_message = message
+            self.current_action_index += 1
+            
+            # check if all completed
+            if self.current_action_index >= len(self.actions):
+                self.status = TaskStatus.COMPLETED
+        
+    def mark_failed(self, error: str):
+        """mark task as failed"""
+        self.status = TaskStatus.FAILED
+        self.error_message = error
+        if self.current_action():
+            self.current_action().status = TaskStatus.FAILED
+            self.current_action().result_message = error
+
     def add_action(self, action: Action) -> None:
         """add action to sequence"""
         self.actions.append(action)
@@ -126,7 +196,10 @@ class TaskSequence:
         return {
             "task_name": self.task_name,
             "actions": [a.to_dict() for a in self.actions],
-            "metadata": self.metadata
+            "metadata": self.metadata,
+            "status": self.status.value,
+            "progress": self.progress,
+            "error_message": self.error_message
         }
     
     def to_json(self, indent: int = 2) -> str:
@@ -137,11 +210,18 @@ class TaskSequence:
     def from_dict(cls, d: Dict[str, Any]) -> "TaskSequence":
         """create TaskSequence from dictionary"""
         actions = [Action.from_dict(a) for a in d.get("actions", [])]
-        return cls(
+        ts = cls(
             actions=actions,
             task_name=d.get("task_name", ""),
             metadata=d.get("metadata", {})
         )
+        ts.status = TaskStatus(d.get("status", "pending"))
+        ts.error_message = d.get("error_message", "")
+        # recalculate current index based on completed actions if needed, 
+        # or simple heuristic: count completed
+        completed_count = sum(1 for a in actions if a.status == TaskStatus.COMPLETED)
+        ts.current_action_index = completed_count
+        return ts
     
     @classmethod
     def from_json(cls, json_str: str) -> "TaskSequence":

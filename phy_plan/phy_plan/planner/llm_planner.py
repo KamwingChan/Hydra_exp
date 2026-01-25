@@ -2,17 +2,20 @@
 llm_planner.py: LLM task planner
 
 use LLM to generate task sequence based on scene graph and natural language instruction.
+Supports physics-aware planning with validation and replanning.
 """
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..core.agent import LLMAgent
 from ..core.scene_graph import SceneGraph
 from ..core.task import TaskSequence, Action, ActionType, Position
+from ..core.physics_agent import PhysicsAwareAgent, RobotCapability, ValidationResult
 from ..prompts.task_planning_prompt import generate_task_planning_prompt
+from .spatial_resolver import SpatialResolver
 
 
 @dataclass
@@ -27,34 +30,72 @@ class ClarificationRequest:
     chain_of_thought: str
 
 
+@dataclass
+class InfeasiblePlan:
+    """
+    Represents a physically infeasible plan
+    
+    Returned when physics validation fails and replanning also fails.
+    """
+    reason: str
+    chain_of_thought: str
+    suggestions: List[str] = field(default_factory=list)
+
+
 class LLMPlanner:
     """
-    LLM task planner
+    LLM task planner with physics-aware validation
     
     流程：
-    1. convert scene graph to compact JSON
+    1. convert scene graph to compact JSON (with physics and position)
     2. generate prompt
     3. call LLM
     4. parse response to TaskSequence
+    5. (optional) validate physics constraints
+    6. (optional) replan if validation fails
     """
     
-    def __init__(self, agent: Optional[LLMAgent] = None, model: str = "gpt-4o-mini"):
+    def __init__(
+        self, 
+        agent: Optional[LLMAgent] = None, 
+        model: str = "gpt-4o-mini",
+        robot_capability: Optional[RobotCapability] = None,
+        enable_physics_validation: bool = True,
+        enable_spatial_resolver: bool = True,
+        max_replan_attempts: int = 2
+    ):
         """
         initialize planner
         
         Args:
             agent: LLM Agent (optional, auto-created if not provided)
             model: model name
+            robot_capability: Robot physical capability specification
+            enable_physics_validation: Enable physics constraint validation
+            enable_spatial_resolver: Enable automatic spatial reasoning
+            max_replan_attempts: Maximum replanning attempts on validation failure
         """
         self.agent = agent or LLMAgent(model=model)
+        
+        # Physics validation
+        self._enable_physics = enable_physics_validation
+        self._physics_agent = PhysicsAwareAgent(robot_capability) if enable_physics_validation else None
+        
+        # Spatial reasoning
+        self._enable_spatial = enable_spatial_resolver
+        self._spatial_resolver = SpatialResolver() if enable_spatial_resolver else None
+        
+        # Replanning
+        self._max_replan_attempts = max_replan_attempts
     
     def plan(
         self, 
         scene_graph: SceneGraph, 
         instruction: str,
         include_example: bool = True,
-        debug: bool = True
-    ) -> Tuple[Union[TaskSequence, ClarificationRequest], Dict[str, Any]]:
+        debug: bool = True,
+        validate_physics: bool = True
+    ) -> Tuple[Union[TaskSequence, ClarificationRequest, InfeasiblePlan], Dict[str, Any]]:
         """
         generate task sequence or clarification request based on scene graph and instruction
         
@@ -63,11 +104,14 @@ class LLMPlanner:
             instruction: natural language instruction
             include_example: whether to include example in prompt
             debug: whether to print debug information
+            validate_physics: whether to validate physics constraints (uses class setting if True)
             
         Returns:
-            (TaskSequence 或 ClarificationRequest, raw_response_dict) 元组
+            (TaskSequence 或 ClarificationRequest 或 InfeasiblePlan, raw_response_dict) 元组
         """
-        # 1. generate prompt
+        # 1. generate prompt (compact format to save tokens)
+        # Physical validation is done in backend by PhysicsAwareAgent
+        # Detailed info is retrieved via candidate enrichment when needed
         compact_json = scene_graph.to_compact_json()
         system_content, user_prompt = generate_task_planning_prompt(
             compact_json, instruction, include_example
@@ -93,9 +137,33 @@ class LLMPlanner:
         # 3. 解析响应
         response_dict = self._parse_response(response_text)
         
-        # 4. check if clarification is needed
+        # 4. Check if LLM already detected infeasibility
+        if response_dict.get("infeasible_reason"):
+            return InfeasiblePlan(
+                reason=response_dict.get("infeasible_reason", ""),
+                chain_of_thought=response_dict.get("chain_of_thought", ""),
+                suggestions=[]
+            ), response_dict
+        
+        # 5. check if clarification is needed
         if response_dict.get("clarification_needed", False):
             candidates = response_dict.get("candidates", [])
+            
+            # Try spatial resolution first
+            if self._enable_spatial and self._spatial_resolver:
+                resolved_id = self._spatial_resolver.resolve(instruction, candidates, scene_graph)
+                if resolved_id:
+                    print(f"[LLMPlanner] Spatial resolver selected: {resolved_id}")
+                    # Replan with resolved object
+                    return self._replan_with_resolved_object(
+                        scene_graph, instruction, resolved_id, include_example, debug
+                    )
+                
+                # Enrich candidates with distance info for display
+                candidates = self._spatial_resolver.rank_candidates_for_display(
+                    candidates, instruction, scene_graph
+                )
+            
             # fill in detailed information (coordinates, physical properties)
             self._enrich_candidates(candidates, scene_graph)
             
@@ -106,10 +174,185 @@ class LLMPlanner:
             )
             return clarification, response_dict
         
-        # 5. convert to TaskSequence (with detailed information retrieval)
+        # 6. convert to TaskSequence (with detailed information retrieval)
         task_seq = self._convert_to_task_sequence(response_dict, scene_graph, instruction)
         
+        # 7. Physics validation (if enabled)
+        if validate_physics and self._enable_physics and self._physics_agent:
+            result = self._validate_and_replan(task_seq, scene_graph, instruction, debug)
+            if result is not None:
+                return result, response_dict
+        
         return task_seq, response_dict
+    
+    def plan_with_physics_validation(
+        self,
+        scene_graph: SceneGraph,
+        instruction: str,
+        debug: bool = True
+    ) -> Tuple[Union[TaskSequence, ClarificationRequest, InfeasiblePlan], ValidationResult]:
+        """
+        Plan with explicit physics validation result
+        
+        Args:
+            scene_graph: Scene graph
+            instruction: User instruction
+            debug: Enable debug output
+            
+        Returns:
+            (result, validation_result) tuple
+        """
+        result, response_dict = self.plan(scene_graph, instruction, debug=debug, validate_physics=False)
+        
+        # If not a TaskSequence, skip validation
+        if not isinstance(result, TaskSequence):
+            return result, ValidationResult(is_valid=True)
+        
+        # Validate
+        if self._physics_agent:
+            validation = self._physics_agent.validate_plan(result, scene_graph)
+            
+            if not validation.is_valid:
+                # Try replanning
+                replan_result = self._replan_with_constraint(
+                    scene_graph, instruction, validation.to_feedback_prompt(), debug
+                )
+                if replan_result:
+                    return replan_result, validation
+                
+                # Return infeasible
+                return InfeasiblePlan(
+                    reason=validation.reason,
+                    chain_of_thought=response_dict.get("chain_of_thought", ""),
+                    suggestions=[self._physics_agent.suggest_alternative(v, scene_graph) 
+                                for v in validation.violations if self._physics_agent.suggest_alternative(v, scene_graph)]
+                ), validation
+            
+            return result, validation
+        
+        return result, ValidationResult(is_valid=True)
+    
+    def _validate_and_replan(
+        self,
+        task_seq: TaskSequence,
+        scene_graph: SceneGraph,
+        instruction: str,
+        debug: bool
+    ) -> Optional[Union[TaskSequence, InfeasiblePlan]]:
+        """
+        Validate task sequence and replan if needed
+        
+        Returns:
+            New TaskSequence or InfeasiblePlan if validation fails, None if valid
+        """
+        validation = self._physics_agent.validate_plan(task_seq, scene_graph)
+        
+        if validation.is_valid:
+            if validation.warnings:
+                print(f"[LLMPlanner] Physics warnings: {validation.warnings}")
+            return None
+        
+        print(f"[LLMPlanner] Physics validation failed: {validation.reason}")
+        
+        # Try replanning with constraint feedback
+        for attempt in range(self._max_replan_attempts):
+            print(f"[LLMPlanner] Replanning attempt {attempt + 1}/{self._max_replan_attempts}...")
+            
+            replan_result = self._replan_with_constraint(
+                scene_graph, instruction, validation.to_feedback_prompt(), debug
+            )
+            
+            if replan_result is None:
+                continue
+            
+            if isinstance(replan_result, InfeasiblePlan):
+                return replan_result
+            
+            # Validate the new plan
+            new_validation = self._physics_agent.validate_plan(replan_result, scene_graph)
+            if new_validation.is_valid:
+                print("[LLMPlanner] Replanning successful!")
+                return replan_result
+            
+            validation = new_validation
+        
+        # All replan attempts failed
+        suggestions = []
+        for v in validation.violations:
+            suggestion = self._physics_agent.suggest_alternative(v, scene_graph)
+            if suggestion:
+                suggestions.append(suggestion)
+        
+        return InfeasiblePlan(
+            reason=validation.reason,
+            chain_of_thought=f"Replanning failed after {self._max_replan_attempts} attempts",
+            suggestions=suggestions
+        )
+    
+    def _replan_with_constraint(
+        self,
+        scene_graph: SceneGraph,
+        instruction: str,
+        constraint_feedback: str,
+        debug: bool
+    ) -> Optional[Union[TaskSequence, InfeasiblePlan]]:
+        """
+        Replan with physics constraint feedback
+        
+        Note: constraint_feedback already contains specific physics info
+        (e.g., "Object O(4) too heavy, weight_level=2"), so we don't need
+        to include full physics in compact JSON.
+        """
+        # Build augmented instruction with constraint feedback
+        augmented_instruction = f"{instruction}\n\n[CONSTRAINT FEEDBACK]\n{constraint_feedback}"
+        
+        compact_json = scene_graph.to_compact_json()  # Use default compact format
+        system_content, user_prompt = generate_task_planning_prompt(
+            compact_json, augmented_instruction, include_example=True
+        )
+        
+        if debug:
+            print(f"[LLMPlanner] Replanning with constraint: {constraint_feedback[:100]}...")
+        
+        response_text = self.agent.llm_call(system_content, user_prompt)
+        
+        try:
+            response_dict = self._parse_response(response_text)
+        except ValueError as e:
+            print(f"[LLMPlanner] Replan parse error: {e}")
+            return None
+        
+        # Check if LLM reports infeasibility
+        if response_dict.get("infeasible_reason"):
+            return InfeasiblePlan(
+                reason=response_dict.get("infeasible_reason", ""),
+                chain_of_thought=response_dict.get("chain_of_thought", ""),
+                suggestions=[]
+            )
+        
+        # Check if still needs clarification
+        if response_dict.get("clarification_needed", False):
+            return None  # Cannot resolve in replan
+        
+        return self._convert_to_task_sequence(response_dict, scene_graph, instruction)
+    
+    def _replan_with_resolved_object(
+        self,
+        scene_graph: SceneGraph,
+        instruction: str,
+        resolved_object_id: str,
+        include_example: bool,
+        debug: bool
+    ) -> Tuple[Union[TaskSequence, ClarificationRequest, InfeasiblePlan], Dict[str, Any]]:
+        """
+        Replan with spatially resolved object
+        """
+        obj = scene_graph.get_object(resolved_object_id)
+        obj_desc = f"{obj.category} ({resolved_object_id})" if obj else resolved_object_id
+        
+        augmented_instruction = f"{instruction}\n\n[SPATIAL RESOLUTION] Based on spatial analysis, use object {obj_desc}."
+        
+        return self.plan(scene_graph, augmented_instruction, include_example, debug, validate_physics=True)
     
     def _enrich_candidates(self, candidates: List[Dict[str, Any]], scene_graph: SceneGraph) -> None:
         """
@@ -354,6 +597,36 @@ class LLMPlanner:
                     "room_id": room_id
                 },
                 description=f"Arrange {object_category} in {room_id}"
+            )
+        
+        elif action_name == "open":
+            object_id = params.get("object_id", "")
+            obj = scene_graph.get_object(object_id)
+            target_pos = None
+            if obj and obj.position:
+                target_pos = Position.from_list(obj.position)
+            
+            return Action(
+                action_type=ActionType.OPEN,
+                target_object=object_id,
+                target_position=target_pos,
+                params={"object_id": object_id},
+                description=f"Open {object_id}" + (f" ({obj.category})" if obj else "")
+            )
+        
+        elif action_name == "close":
+            object_id = params.get("object_id", "")
+            obj = scene_graph.get_object(object_id)
+            target_pos = None
+            if obj and obj.position:
+                target_pos = Position.from_list(obj.position)
+            
+            return Action(
+                action_type=ActionType.CLOSE,
+                target_object=object_id,
+                target_position=target_pos,
+                params={"object_id": object_id},
+                description=f"Close {object_id}" + (f" ({obj.category})" if obj else "")
             )
         
         else:
