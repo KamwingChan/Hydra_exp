@@ -5,6 +5,7 @@
     <!-- Topic arguments for flexible configuration -->
     <arg name="rgb_topic" default="/tesse/left_cam/rgb/image_raw" />
     <arg name="camera_info_topic" default="/tesse/left_cam/camera_info" />
+    <arg name="depth_topic" default="/tesse/depth_cam/mono/image_raw" />
     <arg name="mesh_topic" default="/hydra_dsg_visualizer/dsg_mesh" />
     <arg name="debug_save_images" default="true" />
     <!-- Inference configuration file -->
@@ -25,6 +26,7 @@
         <remap from="input_mesh" to="$(arg mesh_topic)" />
         <remap from="rgb_image" to="$(arg rgb_topic)" />
         <remap from="camera_info" to="$(arg camera_info_topic)" />
+        <remap from="depth_image" to="$(arg depth_topic)" />
         <rosparam command="load" file="$(arg inference_config)" ns="inference" />
         <!-- Load parameters into the node's private namespace -->
         <rosparam command="load" file="$(find phy_graph)/config/label_spaces/$(arg label_space).yaml" />

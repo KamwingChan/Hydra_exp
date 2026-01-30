@@ -1,24 +1,36 @@
 """
-dynamic_planner.py: Dynamic replanning pipeline
+dynamic_planner.py: Dynamic replanning pipeline with conversation context
 
 Implements a complete planning and execution pipeline with:
 1. Physics-aware initial planning
 2. Task-relevant change detection during execution
 3. Hybrid replanning triggers (failure + subtask completion)
 4. Graceful handling of environmental changes
+5. **Persistent conversation context** across replanning
+
+Architecture:
+    DynamicPlannerPipeline: Execution monitoring, scene change detection, replan triggering
+    LLMPlannerPipeline: Interactive planning (optional), user interaction
+    LLMPlanner: Core planning logic (via public API)
+
+Key innovation: Uses persistent LLMAgent.chat() instead of independent plan() calls,
+enabling the LLM to learn from execution failures and scene changes.
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import time
+import json
 
 from ..core.scene_graph import SceneGraph
 from ..core.task import TaskSequence, Action, ActionType, TaskStatus
-from ..core.physics_agent import PhysicsAwareAgent, RobotCapability, ValidationResult
+from ..core.physics_agent import RobotCapability, ValidationResult
 from ..core.change_detector import ChangeDetector, ChangeReport, ChangeType
 from ..input.phy_graph_subscriber import SceneGraphSubscriber
 from .llm_planner import LLMPlanner, ClarificationRequest, InfeasiblePlan
+from .llm_planner_pipeline import LLMPlannerPipeline
+from ..prompts.task_planning_prompt import generate_task_planning_prompt
 
 
 class ReplanTrigger(Enum):
@@ -93,7 +105,7 @@ class DynamicPlannerPipeline:
     
     def __init__(
         self,
-        planner: Optional[LLMPlanner] = None,
+        pipeline: Optional[LLMPlannerPipeline] = None,
         subscriber: Optional[SceneGraphSubscriber] = None,
         robot_capability: Optional[RobotCapability] = None,
         executor: Optional[Any] = None,  # BehaviorExecutor or mock
@@ -101,34 +113,56 @@ class DynamicPlannerPipeline:
         check_scene_after_pick: bool = True,
         position_change_threshold: float = 0.5,
         max_replan_per_task: int = 3,
+        use_conversation_mode: bool = True,
+        model: str = "gpt-4o-mini",
         debug: bool = True
     ):
         """
         Initialize dynamic planner pipeline
         
         Args:
-            planner: LLM planner instance
-            subscriber: Scene graph subscriber for real-time updates
-            robot_capability: Robot physical capabilities
+            pipeline: LLMPlannerPipeline instance for interactive planning (optional)
+                      If provided, uses its planner and scene graph source.
+            subscriber: Scene graph subscriber for real-time updates (used when no pipeline)
+            robot_capability: Robot physical capabilities (used when no pipeline)
             executor: Action executor (BehaviorExecutor or mock)
             check_scene_after_navigate: Check for changes after NAVIGATE
             check_scene_after_pick: Check for changes after PICK
             position_change_threshold: Minimum position change to trigger replan (meters)
             max_replan_per_task: Maximum replanning attempts per task
+            use_conversation_mode: Enable persistent conversation (recommended)
+            model: LLM model name (used when no pipeline)
             debug: Enable debug output
         """
-        self.planner = planner or LLMPlanner(
-            robot_capability=robot_capability,
-            enable_physics_validation=True,
-            enable_spatial_resolver=True
-        )
-        self.subscriber = subscriber
+        if pipeline:
+            # Use pipeline's planner and subscriber
+            self._pipeline = pipeline
+            self.planner = pipeline.planner
+            self.subscriber = pipeline._subscriber or subscriber
+        else:
+            # Create new planner and use subscriber
+            self._pipeline = None
+            self.planner = LLMPlanner(
+                robot_capability=robot_capability,
+                enable_physics_validation=True,
+                enable_spatial_resolver=True
+            )
+            self.subscriber = subscriber
+        
         self.executor = executor
         
         self._check_after_navigate = check_scene_after_navigate
         self._check_after_pick = check_scene_after_pick
         self._max_replan = max_replan_per_task
         self._debug = debug
+        
+        # Conversation mode
+        self._use_conversation = use_conversation_mode
+        self._model = model
+        self._conversation_initialized = False
+        
+        # Robot capability (for prompt generation)
+        self._robot_capability = robot_capability or RobotCapability()
         
         # Change detector (initialized per task)
         self._change_detector: Optional[ChangeDetector] = None
@@ -176,15 +210,61 @@ class DynamicPlannerPipeline:
                 error_message="Failed to get initial scene graph"
             )
         
-        # 2. Initial planning (with physics validation)
+        # 2. Initial planning
         if self._debug:
-            print(f"[DynamicPipeline] Planning for: {instruction}")
+            if self._pipeline:
+                print(f"[DynamicPipeline] Planning with LLMPlannerPipeline (interactive)")
+            else:
+                mode_str = "conversation" if self._use_conversation else "legacy"
+                print(f"[DynamicPipeline] Planning for: {instruction} (mode: {mode_str})")
         
-        result, _ = self.planner.plan(
-            self._current_scene_graph,
-            instruction,
-            debug=self._debug
-        )
+        # Use pipeline for interactive planning if available
+        if self._pipeline:
+            # Use pipeline's run_interactive for full interactive planning
+            # This supports clarification, user input, and SpatialResolver
+            task_seq = self._pipeline.run_interactive(
+                initial_instruction=instruction,
+                debug=self._debug
+            )
+            
+            # Handle special cases from run_interactive
+            if task_seq.task_name == "Empty":
+                return PipelineResult(
+                    success=False,
+                    error_message="No instruction provided",
+                    execution_time=time.time() - start_time
+                )
+            
+            if task_seq.task_name == "Error":
+                return PipelineResult(
+                    success=False,
+                    error_message="Interactive planning failed",
+                    execution_time=time.time() - start_time
+                )
+            
+            if task_seq.task_name == "Cancelled":
+                return PipelineResult(
+                    success=False,
+                    error_message="User cancelled planning",
+                    execution_time=time.time() - start_time
+                )
+            
+            result = task_seq
+            
+        elif self._use_conversation:
+            # Initialize conversation on first use
+            if not self._conversation_initialized:
+                self._init_planning_conversation()
+                self._conversation_initialized = True
+            
+            result = self._chat_for_plan(instruction, self._current_scene_graph)
+        else:
+            # Legacy mode: use planner.plan()
+            result, _ = self.planner.plan(
+                self._current_scene_graph,
+                instruction,
+                debug=self._debug
+            )
         
         # Handle planning result
         if isinstance(result, ClarificationRequest):
@@ -313,6 +393,21 @@ class DynamicPlannerPipeline:
         # Always check after PLACE (object position changed)
         if action.action_type == ActionType.PLACE:
             return True
+        if action.action_type == ActionType.PLACE_INSIDE:
+            return True
+        # Always check after OBSERVE (physical properties may have changed)
+        if action.action_type == ActionType.OBSERVE:
+            return True
+        if action.action_type == ActionType.ARRANGE:
+            return True
+        if action.action_type == ActionType.CLEAN_UP:
+            return True
+        if action.action_type == ActionType.LOCATE:
+            return True
+        if action.action_type == ActionType.OPEN:
+            return True
+        if action.action_type == ActionType.CLOSE:
+            return True
         return False
     
     def _check_and_handle_scene_change(
@@ -377,17 +472,27 @@ class DynamicPlannerPipeline:
         if new_sg is None:
             new_sg = self._current_scene_graph
         
-        # Build failure context
+        # Build failure context (in ENGLISH for LLM)
         failure_context = (
             f"Previous action failed: {failed_action.description}\n"
             f"Error: {exec_result.error_message}\n"
             f"Please replan considering this failure."
         )
         
-        augmented_instruction = f"{instruction}\n\n[EXECUTION FAILURE]\n{failure_context}"
-        
-        # Replan
-        result, _ = self.planner.plan(new_sg, augmented_instruction, debug=self._debug)
+        # Use conversation mode or legacy mode
+        if self._use_conversation and self._conversation_initialized:
+            # Continue conversation (LLM sees execution history)
+            # Use planner's agent (shared conversation history)
+            result = self.planner.replan_from_context(
+                conversation_agent=self.planner.agent,
+                context_message=failure_context,
+                scene_graph=new_sg,
+                debug=self._debug
+            )
+        else:
+            # Legacy mode: independent plan() call
+            augmented_instruction = f"{instruction}\n\n[EXECUTION FAILURE]\n{failure_context}"
+            result, _ = self.planner.plan(new_sg, augmented_instruction, debug=self._debug)
         
         if isinstance(result, (ClarificationRequest, InfeasiblePlan)):
             return False
@@ -441,12 +546,23 @@ class DynamicPlannerPipeline:
         
         self._replan_count += 1
         
-        # Build change context
+        # Build change context (in ENGLISH for LLM)
         change_context = change_report.to_replan_context()
-        augmented_instruction = f"{instruction}\n\n[SCENE CHANGE]\n{change_context}"
         
-        # Replan
-        result, _ = self.planner.plan(new_sg, augmented_instruction, debug=self._debug)
+        # Use conversation mode or legacy mode
+        if self._use_conversation and self._conversation_initialized:
+            # Continue conversation (LLM sees what happened before)
+            # Use planner's agent (shared conversation history)
+            result = self.planner.replan_from_context(
+                conversation_agent=self.planner.agent,
+                context_message=f"Scene changed:\n{change_context}",
+                scene_graph=new_sg,
+                debug=self._debug
+            )
+        else:
+            # Legacy mode: independent plan() call
+            augmented_instruction = f"{instruction}\n\n[SCENE CHANGE]\n{change_context}"
+            result, _ = self.planner.plan(new_sg, augmented_instruction, debug=self._debug)
         
         # Record event
         event = ReplanEvent(
@@ -530,16 +646,13 @@ class DynamicPlannerPipeline:
         scene_graph: Optional[SceneGraph] = None
     ) -> ValidationResult:
         """
-        Validate a plan against physics constraints
+        Validate a plan against physics constraints (delegates to planner)
         """
         sg = scene_graph or self._current_scene_graph
         if sg is None:
             raise ValueError("No scene graph available")
         
-        if self.planner._physics_agent:
-            return self.planner._physics_agent.validate_plan(task_seq, sg)
-        
-        return ValidationResult(is_valid=True)
+        return self.planner.validate_plan(task_seq, sg)
     
     def get_current_state(self) -> Dict[str, Any]:
         """Get current pipeline state"""
@@ -550,3 +663,41 @@ class DynamicPlannerPipeline:
             "replan_count": self._replan_count,
             "tracked_objects": list(self._change_detector._task_relevant_objects) if self._change_detector else []
         }
+    
+    # ==================== NEW: Conversation Mode Helpers ====================
+    
+    def _init_planning_conversation(self) -> None:
+        """Initialize persistent conversation for planning
+        
+        Note: Uses planner's agent instead of creating a separate one,
+        ensuring conversation history is shared between initial planning
+        and replanning.
+        """
+        # Generate system prompt using existing prompt generator
+        # Parameters: scene_graph_compact, instruction, include_example
+        system_prompt, _ = generate_task_planning_prompt(
+            scene_graph_compact="",  # Will be provided in user messages
+            instruction="",
+            include_example=True
+        )
+        
+        # Use planner's agent to maintain conversation history
+        self.planner.init_conversation(system_prompt)
+        
+        if self._debug:
+            print(f"[DynamicPipeline] Initialized conversation with planner's agent")
+    
+    def _chat_for_plan(
+        self,
+        instruction: str,
+        scene_graph: SceneGraph
+    ) -> Union[TaskSequence, ClarificationRequest, InfeasiblePlan]:
+        """
+        Get initial plan via conversation (delegation to planner's chat interface)
+        
+        For initial planning, we still use planner.plan() for now.
+        Conversation mode shines during replanning when history matters.
+        """
+        # For initial planning, use standard plan() method
+        result, _ = self.planner.plan(scene_graph, instruction, debug=self._debug)
+        return result

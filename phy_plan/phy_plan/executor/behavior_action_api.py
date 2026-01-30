@@ -34,9 +34,10 @@ class BehaviorActionAPI:
         env: Omnigibson Environment instance
         robot: Robot instance (usually env.robots[0])
         enable_head_tracking: Whether to enable head tracking (default: True)
+        curobo_batch_size: Batch size for curobo motion planning (default: 1, lower uses less GPU memory)
     """
     
-    def __init__(self, env, robot, enable_head_tracking: bool = True):
+    def __init__(self, env, robot, enable_head_tracking: bool = True, curobo_batch_size: int = 1):
         if not OMNIGIBSON_AVAILABLE:
             raise ImportError(
                 "omnigibson is not available. Please install omnigibson to use BehaviorActionAPI."
@@ -47,7 +48,8 @@ class BehaviorActionAPI:
         self.controller = StarterSemanticActionPrimitives(
             env=env,
             robot=robot,
-            enable_head_tracking=enable_head_tracking
+            enable_head_tracking=enable_head_tracking,
+            curobo_batch_size=curobo_batch_size
         )
         
     def execute_primitive(

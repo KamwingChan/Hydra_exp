@@ -1,0 +1,4 @@
+object_labels:
+ - "*chair"
+ - "*table"
+ - "*coffee_cup"

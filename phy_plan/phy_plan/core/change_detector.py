@@ -46,14 +46,14 @@ class ObjectChange:
     
     def __str__(self) -> str:
         if self.change_type == ChangeType.OBJECT_APPEARED:
-            return f"物体 {self.object_id} ({self.category}) 出现在 {self.new_room_id}"
+            return f"object {self.object_id} ({self.category}) appeared in {self.new_room_id}"
         elif self.change_type == ChangeType.OBJECT_DISAPPEARED:
-            return f"物体 {self.object_id} ({self.category}) 从 {self.old_room_id} 消失"
+            return f"object {self.object_id} ({self.category}) disappeared from {self.old_room_id}"
         elif self.change_type == ChangeType.OBJECT_MOVED_ROOM:
-            return f"物体 {self.object_id} ({self.category}) 从 {self.old_room_id} 移动到 {self.new_room_id}"
+            return f"object {self.object_id} ({self.category}) moved from {self.old_room_id} to {self.new_room_id}"
         elif self.change_type == ChangeType.OBJECT_POSITION_CHANGED:
-            return f"物体 {self.object_id} ({self.category}) 位置变化 {self.displacement:.2f}m"
-        return f"物体 {self.object_id} 发生变化"
+            return f"object {self.object_id} ({self.category}) position changed {self.displacement:.2f}m"
+        return f"object {self.object_id} changed"
 
 
 @dataclass
@@ -91,32 +91,32 @@ class ChangeReport:
     def summary(self) -> str:
         """Generate human-readable summary"""
         if not self.has_changes:
-            return "场景无变化"
+            return "no changes detected"
         
-        lines = ["场景变化检测:"]
+        lines = ["scene change detection:"]
         
         if self.objects_appeared:
-            lines.append(f"  新出现物体: {len(self.objects_appeared)}")
+            lines.append(f"  new objects: {len(self.objects_appeared)}")
             for c in self.objects_appeared[:3]:  # Show first 3
                 lines.append(f"    - {c}")
         
         if self.objects_disappeared:
-            lines.append(f"  消失物体: {len(self.objects_disappeared)}")
+            lines.append(f"  disappeared objects: {len(self.objects_disappeared)}")
             for c in self.objects_disappeared[:3]:
                 lines.append(f"    - {c}")
         
         if self.objects_moved_room:
-            lines.append(f"  换房间物体: {len(self.objects_moved_room)}")
+            lines.append(f"  moved room objects: {len(self.objects_moved_room)}")
             for c in self.objects_moved_room[:3]:
                 lines.append(f"    - {c}")
         
         if self.objects_position_changed:
-            lines.append(f"  位置变化物体: {len(self.objects_position_changed)}")
+            lines.append(f"  position changed objects: {len(self.objects_position_changed)}")
             for c in self.objects_position_changed[:3]:
                 lines.append(f"    - {c}")
         
         if self.is_task_affected:
-            lines.append(f"\n⚠️ 任务相关变化: {len(self.task_relevant_changes)}")
+            lines.append(f"\n⚠️ task-relevant changes: {len(self.task_relevant_changes)}")
             for c in self.task_relevant_changes:
                 lines.append(f"    - {c}")
         
@@ -127,10 +127,10 @@ class ChangeReport:
         if not self.task_relevant_changes:
             return ""
         
-        lines = ["检测到环境变化，影响当前任务:"]
+        lines = ["detected scene changes, affecting current task:"]
         for c in self.task_relevant_changes:
             lines.append(f"- {c}")
-        lines.append("\n请根据最新场景图重新规划。")
+        lines.append("\nplease re-plan based on the latest scene graph.")
         
         return "\n".join(lines)
 

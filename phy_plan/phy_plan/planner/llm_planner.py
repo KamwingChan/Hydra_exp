@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from ..core.agent import LLMAgent
 from ..core.scene_graph import SceneGraph
 from ..core.task import TaskSequence, Action, ActionType, Position
-from ..core.physics_agent import PhysicsAwareAgent, RobotCapability, ValidationResult
+from ..core.physics_agent import PhysicsAwareAgent, RobotCapability, ValidationResult, ConstraintViolation
 from ..prompts.task_planning_prompt import generate_task_planning_prompt
 from .spatial_resolver import SpatialResolver
 
@@ -88,6 +88,47 @@ class LLMPlanner:
         # Replanning
         self._max_replan_attempts = max_replan_attempts
     
+    # ==================== Conversation Management ====================
+    
+    def init_conversation(self, system_content: str) -> None:
+        """
+        Initialize a new conversation context
+        
+        This sets up the agent for multi-turn dialogue by clearing
+        previous history and setting the system prompt.
+        
+        Args:
+            system_content: System message defining role and constraints
+        """
+        self.agent.init_conversation(system_content)
+    
+    def chat(self, user_prompt: str) -> str:
+        """
+        Continue a multi-turn conversation
+        
+        Uses the existing conversation context (system prompt and history)
+        to generate a response. Call init_conversation() first to set up
+        the conversation context.
+        
+        Args:
+            user_prompt: User message to send
+            
+        Returns:
+            LLM response text
+        """
+        return self.agent.chat(user_prompt)
+    
+    def reset_conversation(self) -> None:
+        """Clear conversation history"""
+        self.agent.reset()
+    
+    @property
+    def conversation_history(self) -> list:
+        """Get current conversation history (read-only)"""
+        return list(self.agent.messages)
+    
+    # ==================== Planning Methods ====================
+    
     def plan(
         self, 
         scene_graph: SceneGraph, 
@@ -128,16 +169,16 @@ class LLMPlanner:
         print(f"[LLMPlanner] Calling {self.agent.model}...")
         response_text = self.agent.llm_call(system_content, user_prompt)
         
-        # DEBUG: 打印 Response
+        # DEBUG: print Response
         if debug:
             print("\n" + "="*40 + " DEBUG: RESPONSE " + "="*40)
             print(response_text)
             print("="*97 + "\n")
         
-        # 3. 解析响应
-        response_dict = self._parse_response(response_text)
+        # 3. parse response
+        response_dict = self.parse_response(response_text)
         
-        # 4. Check if LLM already detected infeasibility
+        # 4. check if LLM already detected infeasibility
         if response_dict.get("infeasible_reason"):
             return InfeasiblePlan(
                 reason=response_dict.get("infeasible_reason", ""),
@@ -145,27 +186,27 @@ class LLMPlanner:
                 suggestions=[]
             ), response_dict
         
-        # 5. check if clarification is needed
+        # 5. check if clarification needed
         if response_dict.get("clarification_needed", False):
             candidates = response_dict.get("candidates", [])
             
-            # Try spatial resolution first
+            # try spatial resolution first
             if self._enable_spatial and self._spatial_resolver:
                 resolved_id = self._spatial_resolver.resolve(instruction, candidates, scene_graph)
                 if resolved_id:
                     print(f"[LLMPlanner] Spatial resolver selected: {resolved_id}")
-                    # Replan with resolved object
+                    # replan with resolved object
                     return self._replan_with_resolved_object(
                         scene_graph, instruction, resolved_id, include_example, debug
                     )
                 
-                # Enrich candidates with distance info for display
+                # enrich candidates with distance info for display
                 candidates = self._spatial_resolver.rank_candidates_for_display(
                     candidates, instruction, scene_graph
                 )
             
             # fill in detailed information (coordinates, physical properties)
-            self._enrich_candidates(candidates, scene_graph)
+            self.enrich_candidates(candidates, scene_graph)
             
             clarification = ClarificationRequest(
                 question=response_dict.get("question", ""),
@@ -175,7 +216,7 @@ class LLMPlanner:
             return clarification, response_dict
         
         # 6. convert to TaskSequence (with detailed information retrieval)
-        task_seq = self._convert_to_task_sequence(response_dict, scene_graph, instruction)
+        task_seq = self.convert_to_task_sequence(response_dict, scene_graph, instruction)
         
         # 7. Physics validation (if enabled)
         if validate_physics and self._enable_physics and self._physics_agent:
@@ -184,6 +225,40 @@ class LLMPlanner:
                 return result, response_dict
         
         return task_seq, response_dict
+    
+    def validate_plan(
+        self,
+        task_seq: TaskSequence,
+        scene_graph: SceneGraph
+    ) -> ValidationResult:
+        """
+        Validate a task sequence against physics constraints (Public API)
+        
+        Args:
+            task_seq: Task sequence to validate
+            scene_graph: Scene graph for context
+            
+        Returns:
+            ValidationResult with is_valid, reason, violations, warnings
+        """
+        if self._enable_physics and self._physics_agent:
+            return self._physics_agent.validate_plan(task_seq, scene_graph)
+        return ValidationResult(is_valid=True)
+
+    def get_physics_suggestion(self, violation: ConstraintViolation, scene_graph: SceneGraph) -> Optional[str]:
+        """
+        Get alternative suggestion for a physics violation (Public API)
+        
+        Args:
+            violation: ConstraintViolation object (not string)
+            scene_graph: Scene graph for context
+            
+        Returns:
+            Suggestion string if available, else None
+        """
+        if self._enable_physics and self._physics_agent:
+            return self._physics_agent.suggest_alternative(violation, scene_graph)
+        return None
     
     def plan_with_physics_validation(
         self,
@@ -221,11 +296,16 @@ class LLMPlanner:
                     return replan_result, validation
                 
                 # Return infeasible
+                suggestions = []
+                for v in validation.violations:
+                    s = self.get_physics_suggestion(v, scene_graph)
+                    if s:
+                        suggestions.append(s)
+                
                 return InfeasiblePlan(
                     reason=validation.reason,
                     chain_of_thought=response_dict.get("chain_of_thought", ""),
-                    suggestions=[self._physics_agent.suggest_alternative(v, scene_graph) 
-                                for v in validation.violations if self._physics_agent.suggest_alternative(v, scene_graph)]
+                    suggestions=suggestions
                 ), validation
             
             return result, validation
@@ -279,7 +359,7 @@ class LLMPlanner:
         # All replan attempts failed
         suggestions = []
         for v in validation.violations:
-            suggestion = self._physics_agent.suggest_alternative(v, scene_graph)
+            suggestion = self.get_physics_suggestion(v, scene_graph)
             if suggestion:
                 suggestions.append(suggestion)
         
@@ -317,7 +397,7 @@ class LLMPlanner:
         response_text = self.agent.llm_call(system_content, user_prompt)
         
         try:
-            response_dict = self._parse_response(response_text)
+            response_dict = self.parse_response(response_text)
         except ValueError as e:
             print(f"[LLMPlanner] Replan parse error: {e}")
             return None
@@ -334,7 +414,7 @@ class LLMPlanner:
         if response_dict.get("clarification_needed", False):
             return None  # Cannot resolve in replan
         
-        return self._convert_to_task_sequence(response_dict, scene_graph, instruction)
+        return self.convert_to_task_sequence(response_dict, scene_graph, instruction)
     
     def _replan_with_resolved_object(
         self,
@@ -354,12 +434,16 @@ class LLMPlanner:
         
         return self.plan(scene_graph, augmented_instruction, include_example, debug, validate_physics=True)
     
-    def _enrich_candidates(self, candidates: List[Dict[str, Any]], scene_graph: SceneGraph) -> None:
+    def enrich_candidates(self, candidates: List[Dict[str, Any]], scene_graph: SceneGraph) -> None:
         """
-        fill in candidate object detailed information (Stage 2 Retrieval)
+        Fill in candidate object detailed information (Public API, Stage 2 Retrieval)
         
-        defensive filling: only add when attribute exists, ensure it works even when there is no physical property data.
-        also supports filling room information (if there is room ambiguity).
+        Defensive filling: only add when attribute exists, ensure it works even when there is no physical property data.
+        Also supports filling room information (if there is room ambiguity).
+        
+        Args:
+            candidates: List of candidate dictionaries to enrich (modified in-place)
+            scene_graph: Scene graph for retrieving detailed information
         """
         for cand in candidates:
             # === handle object candidates ===
@@ -403,9 +487,9 @@ class LLMPlanner:
                     if full_room.description:
                         cand["description"] = full_room.description
 
-    def _parse_response(self, response_text: str) -> Dict[str, Any]:
+    def parse_response(self, response_text: str) -> Dict[str, Any]:
         """
-        parse LLM response text to dictionary
+        Parse LLM response text to dictionary (Public API)
         
         Args:
             response_text: LLM response text
@@ -466,22 +550,22 @@ class LLMPlanner:
             
             raise ValueError(error_msg)
     
-    def _convert_to_task_sequence(
+    def convert_to_task_sequence(
         self, 
         response_dict: Dict[str, Any],
         scene_graph: SceneGraph,
         instruction: str
     ) -> TaskSequence:
         """
-        将解析后的响应转换为 TaskSequence
+        Convert parsed response to TaskSequence (Public API)
         
         Args:
-            response_dict: 解析后的 LLM 响应
-            scene_graph: 场景图（用于检索详细信息）
-            instruction: 原始指令
+            response_dict: Parsed LLM response dictionary
+            scene_graph: Scene graph for retrieving detailed information
+            instruction: Original instruction (used as task name)
             
         Returns:
-            TaskSequence 对象
+            TaskSequence object
         """
         task_seq = TaskSequence(
             task_name=instruction[:50] + "..." if len(instruction) > 50 else instruction,
@@ -557,10 +641,12 @@ class LLMPlanner:
                 # 放在某个表面物体上（如桌子）
                 surface_obj = scene_graph.get_object(surface_id)
                 if surface_obj:
-                    # 计算物体顶部位置：position + bbox高度/2
-                    surface_top_z = surface_obj.position[2]
-                    if hasattr(surface_obj, 'bbox') and surface_obj.bbox:
-                        surface_top_z += surface_obj.bbox[2] / 2  # bbox[2] 是高度
+                    # 计算物体顶部位置：使用 bounding_box 的最大 z 值
+                    if surface_obj.bounding_box:
+                        surface_top_z = surface_obj.bounding_box.max_point[2]
+                    else:
+                        # 无 bbox 时用物体 position 的 z 作为近似
+                        surface_top_z = surface_obj.position[2]
                     target_pos = Position(
                         x=surface_obj.position[0],
                         y=surface_obj.position[1],
@@ -583,6 +669,31 @@ class LLMPlanner:
                 target_object=object_id,
                 target_position=target_pos,
                 params={"surface_id": surface_id, "room_id": room_id},
+                description=description
+            )
+        
+        elif action_name == "place_inside":
+            object_id = params.get("object_id", "")
+            container_id = params.get("container_id", "")
+            target_pos = None
+            description = ""
+            
+            if container_id:
+                container_obj = scene_graph.get_object(container_id)
+                if container_obj:
+                    # 使用容器中心位置作为目标
+                    target_pos = Position.from_list(container_obj.position)
+                    description = f"Place {object_id} inside {container_id} ({container_obj.category})"
+                else:
+                    description = f"Place {object_id} inside {container_id}"
+            else:
+                description = f"Place {object_id} inside container"
+            
+            return Action(
+                action_type=ActionType.PLACE_INSIDE,
+                target_object=object_id,
+                target_position=target_pos,
+                params={"container_id": container_id},
                 description=description
             )
         
@@ -629,6 +740,21 @@ class LLMPlanner:
                 description=f"Close {object_id}" + (f" ({obj.category})" if obj else "")
             )
         
+        elif action_name == "observe":
+            object_id = params.get("object_id", "")
+            obj = scene_graph.get_object(object_id)
+            target_pos = None
+            if obj and obj.position:
+                target_pos = Position.from_list(obj.position)
+            
+            return Action(
+                action_type=ActionType.OBSERVE,
+                target_object=object_id,
+                target_position=target_pos,
+                params={"object_id": object_id},
+                description=f"Observe {object_id} to confirm properties" + (f" ({obj.category})" if obj else "")
+            )
+        
         else:
             print(f"[LLMPlanner] Warning: Unknown action '{action_name}'")
             return None
@@ -656,3 +782,93 @@ class LLMPlanner:
         result, response_dict = self.plan(scene_graph, instruction)
         
         return result, response_dict, full_prompt
+    
+    def replan_from_context(
+        self,
+        conversation_agent: LLMAgent,
+        context_message: str,
+        scene_graph: SceneGraph,
+        debug: bool = True
+    ) -> Union[TaskSequence, ClarificationRequest, InfeasiblePlan]:
+        """
+        Replan using conversation context (NEW for Dynamic Replanning)
+        
+        This method continues an existing conversation instead of creating a new one,
+        allowing the LLM to see execution history and previous failures.
+        
+        Args:
+            conversation_agent: Ongoing conversation agent (with history)
+            context_message: Context about failure/change (in ENGLISH)
+            scene_graph: Updated scene graph
+            debug: Enable debug output
+            
+        Returns:
+            TaskSequence, ClarificationRequest, or InfeasiblePlan
+        """
+        # Build replan prompt (ensure English for LLM)
+        compact_json = scene_graph.to_compact_json()
+        
+        replan_prompt = f"""{context_message}
+
+Updated Scene Graph:
+{compact_json}
+
+Please generate a new plan considering the above context and updated scene."""
+        
+        if debug:
+            print(f"[LLMPlanner] Replanning via conversation...")
+            print(f"[LLMPlanner] Context (first 100 chars): {context_message[:100]}...")
+        
+        # Continue conversation (preserves history)
+        response_text = conversation_agent.chat(replan_prompt)
+        
+        if debug:
+            print(f"[LLMPlanner] Replan response received (length: {len(response_text)})")
+        
+        try:
+            response_dict = self.parse_response(response_text)
+        except ValueError as e:
+            print(f"[LLMPlanner] Failed to parse replan response: {e}")
+            return InfeasiblePlan(
+                reason=f"Failed to parse LLM response: {str(e)}",
+                chain_of_thought="",
+                suggestions=[]
+            )
+        
+        # Check if LLM reports infeasibility
+        if response_dict.get("infeasible_reason"):
+            return InfeasiblePlan(
+                reason=response_dict.get("infeasible_reason", ""),
+                chain_of_thought=response_dict.get("chain_of_thought", ""),
+                suggestions=[]
+            )
+        
+        # Check if clarification needed
+        if response_dict.get("clarification_needed", False):
+            candidates = response_dict.get("candidates", [])
+            self.enrich_candidates(candidates, scene_graph)
+            
+            return ClarificationRequest(
+                question=response_dict.get("question", ""),
+                candidates=candidates,
+                chain_of_thought=response_dict.get("chain_of_thought", "")
+            )
+        
+        # Convert to TaskSequence
+        task_seq = self.convert_to_task_sequence(
+            response_dict, scene_graph, "Replanned task"
+        )
+        
+        # Physics validation
+        if self._enable_physics and self._physics_agent:
+            validation = self._physics_agent.validate_plan(task_seq, scene_graph)
+            if not validation.is_valid:
+                if debug:
+                    print(f"[LLMPlanner] Replan physics validation failed: {validation.reason}")
+                return InfeasiblePlan(
+                    reason=validation.reason,
+                    chain_of_thought=response_dict.get("chain_of_thought", ""),
+                    suggestions=[]
+                )
+        
+        return task_seq

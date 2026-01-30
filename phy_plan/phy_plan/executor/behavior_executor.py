@@ -8,12 +8,20 @@ Provides execution feedback for dynamic replanning:
 """
 import time
 import json
+import logging
 from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, List, Dict, Any, Tuple, Callable
+from typing import Optional, List, Dict, Any, Tuple, Callable, TYPE_CHECKING
+
+import numpy as np
 
 from ..core.task import TaskSequence, Action, ActionType, TaskStatus, Position
+
+if TYPE_CHECKING:
+    from ..core.scene_graph import SceneGraph
+
+logger = logging.getLogger(__name__)
 
 # Try to import BehaviorActionAPI
 try:
@@ -121,10 +129,18 @@ class BehaviorExecutor:
         env, 
         use_real_api: bool = True,
         max_retries: int = 2,
-        on_action_feedback: Optional[Callable[[ActionFeedback], None]] = None
+        on_action_feedback: Optional[Callable[[ActionFeedback], None]] = None,
+        scene_graph: Optional["SceneGraph"] = None
     ):
         """
         Initialize executor with Omnigibson environment.
+        
+        Args:
+            env: OmniGibson environment instance
+            use_real_api: If True, use real BEHAVIOR API. If False, use mock execution.
+            max_retries: Maximum retry attempts per action
+            on_action_feedback: Callback for action feedback
+            scene_graph: phy_plan SceneGraph for object position/category lookup
         """
         self.env = env
         # Assuming single robot setup common in BEHAVIOR tasks
@@ -134,10 +150,17 @@ class BehaviorExecutor:
         self.max_retries = max_retries
         self.on_action_feedback = on_action_feedback
         
+        # Scene graph for object lookup (category + position matching)
+        self.scene_graph: Optional["SceneGraph"] = scene_graph
+        
         # State tracking
         self._object_in_hand: Optional[str] = None
         self._last_feedback: Optional[ActionFeedback] = None
         self._execution_history: List[ActionFeedback] = []
+        
+        # Object match cache: node_id -> OmniGibson object
+        # Used to avoid repeated position matching for the same object
+        self._object_match_cache: Dict[str, Any] = {}
         
         # Initialize BEHAVIOR API if available and requested
         self.api = None
@@ -259,12 +282,16 @@ class BehaviorExecutor:
                     success, message, error_type = self._pick_with_feedback(action)
                 elif action.action_type == ActionType.PLACE:
                     success, message, error_type = self._place_with_feedback(action)
+                elif action.action_type == ActionType.PLACE_INSIDE:
+                    success, message, error_type = self._place_inside_with_feedback(action)
                 elif action.action_type == ActionType.MOVE_OBJECT:
                     success, message, error_type = self._move_object_with_feedback(action)
                 elif action.action_type == ActionType.OPEN:
                     success, message, error_type = self._open_with_feedback(action)
                 elif action.action_type == ActionType.CLOSE:
                     success, message, error_type = self._close_with_feedback(action)
+                elif action.action_type == ActionType.OBSERVE:
+                    success, message, error_type = self._observe_with_feedback(action)
                 else:
                     # For other actions, just mark as success for now (mock execution)
                     success = True
@@ -404,6 +431,35 @@ class BehaviorExecutor:
         self._object_in_hand = None
         return True, f"[Mock] Placed {obj_id} on/in {target}", ExecutionErrorType.SUCCESS
     
+    def _place_inside_with_feedback(self, action: Action) -> Tuple[bool, str, ExecutionErrorType]:
+        """Place inside a container with detailed error feedback."""
+        obj_id = action.target_object
+        if not obj_id:
+            return False, "No object specified for PLACE_INSIDE", ExecutionErrorType.PLACE_FAILED
+        
+        container_id = action.params.get("container_id")
+        if not container_id:
+            return False, "No container_id specified for PLACE_INSIDE", ExecutionErrorType.PLACE_FAILED
+        
+        if self.use_real_api and self.api:
+            container_obj = self._find_object(container_id)
+            if not container_obj:
+                return False, f"Container {container_id} not found in scene", ExecutionErrorType.OBJECT_NOT_FOUND
+            
+            try:
+                success, message, metadata = self.api.place_inside(container_obj)
+                if success:
+                    self._object_in_hand = None
+                    return True, message, ExecutionErrorType.SUCCESS
+                else:
+                    return False, message, ExecutionErrorType.PLACE_FAILED
+            except Exception as e:
+                return False, str(e), ExecutionErrorType.PLACE_FAILED
+        
+        # Mock execution
+        self._object_in_hand = None
+        return True, f"[Mock] Placed {obj_id} inside {container_id}", ExecutionErrorType.SUCCESS
+    
     def _move_object_with_feedback(self, action: Action) -> Tuple[bool, str, ExecutionErrorType]:
         """Move object with detailed error feedback."""
         obj_id = action.target_object
@@ -471,28 +527,166 @@ class BehaviorExecutor:
         # Mock execution
         return True, f"[Mock] Closed {obj_id}", ExecutionErrorType.SUCCESS
 
+    # Observation wait time in seconds (allows phy_graph to update scene graph)
+    OBSERVE_WAIT_TIME = 3.0
+    
+    def _observe_with_feedback(self, action: Action) -> Tuple[bool, str, ExecutionErrorType]:
+        """
+        Observe an object to confirm/update its physical properties.
+        
+        This action:
+        1. Navigates the robot closer to the target object
+        2. Waits for the perception system (phy_graph) to re-analyze the object
+        3. Scene graph will be updated asynchronously via ROS subscriber
+        
+        Use when:
+        - Object has low inference_confidence (< 50)
+        - Physical properties are unknown or uncertain
+        - Need to verify object state before manipulation
+        
+        Note: After this action completes, DynamicPlannerPipeline should check
+        for scene graph updates to get the new physical properties.
+        """
+        obj_id = action.params.get("object_id") or action.target_object
+        if not obj_id:
+            return False, "No object specified for OBSERVE action", ExecutionErrorType.UNKNOWN
+        
+        if self.use_real_api and self.api:
+            obj = self._find_object(obj_id)
+            if not obj:
+                return False, f"Object {obj_id} not found in scene", ExecutionErrorType.OBJECT_NOT_FOUND
+            
+            try:
+                # 1. Navigate closer to the object for better observation
+                logger.info(f"Approaching {obj_id} for observation...")
+                nav_success, nav_msg, nav_meta = self.api.navigate_to(obj)
+                if not nav_success:
+                    return False, f"Failed to approach {obj_id} for observation: {nav_msg}", ExecutionErrorType.NAVIGATION_FAILED
+                
+                # 2. Wait for phy_graph to process and update scene graph
+                # The VLM inference is triggered automatically when the robot
+                # observes the object (keyframe capture + inference pipeline)
+                logger.info(f"Waiting {self.OBSERVE_WAIT_TIME}s for scene graph update...")
+                time.sleep(self.OBSERVE_WAIT_TIME)
+                
+                # 3. Clear object cache since properties may have changed
+                if obj_id in self._object_match_cache:
+                    del self._object_match_cache[obj_id]
+                
+                return True, f"Observed {obj_id}, scene graph should be updated", ExecutionErrorType.SUCCESS
+                
+            except Exception as e:
+                return False, f"Error observing {obj_id}: {str(e)}", ExecutionErrorType.UNKNOWN
+        
+        # Mock execution - also wait to simulate real behavior
+        logger.info(f"[Mock] Observing {obj_id}, waiting {self.OBSERVE_WAIT_TIME}s...")
+        time.sleep(self.OBSERVE_WAIT_TIME)
+        return True, f"[Mock] Observed {obj_id}, scene graph should be updated", ExecutionErrorType.SUCCESS
+
     def _find_object(self, obj_id: str):
         """
-        Find object in scene by ID or name.
+        Find OmniGibson object by node_id using category + position matching.
+        
+        Strategy:
+        1. Check cache first
+        2. Get target object's category and position from scene_graph
+        3. Filter OmniGibson objects by category
+        4. Select the one with closest position
         
         Args:
-            obj_id: Object ID (e.g., "O(13)") or name
+            obj_id: Object ID (e.g., "O(13)") or direct OmniGibson name
             
         Returns:
-            Object instance or None if not found
+            OmniGibson object instance or None if not found
         """
         if not self.env or not hasattr(self.env, 'scene'):
             return None
         
+        # 1. Check cache first
+        if obj_id in self._object_match_cache:
+            return self._object_match_cache[obj_id]
+        
+        # 2. Try direct name lookup first (for backward compatibility)
         try:
-            # Try to find by name in object registry
             obj = self.env.scene.object_registry("name", obj_id)
-            return obj
-        except:
-            # If that fails, try other methods
+            if obj is not None:
+                self._object_match_cache[obj_id] = obj
+                return obj
+        except Exception:
             pass
         
-        return None
+        # 3. Use category + position matching if scene_graph is available
+        if self.scene_graph is None:
+            logger.warning(f"Cannot find object {obj_id}: scene_graph not set")
+            return None
+        
+        # Get target object info from scene_graph
+        obj_node = self.scene_graph.get_object(obj_id)
+        if obj_node is None:
+            logger.warning(f"Object {obj_id} not found in scene_graph")
+            return None
+        
+        target_category = obj_node.category
+        target_pos = np.array(obj_node.position)
+        
+        # 4. Find candidates with same category in OmniGibson scene
+        candidates = []
+        try:
+            for og_obj in self.env.scene.objects:
+                # Check if category matches
+                og_category = getattr(og_obj, 'category', None)
+                if og_category and og_category.lower() == target_category.lower():
+                    try:
+                        og_pos = np.array(og_obj.get_position())
+                        distance = np.linalg.norm(og_pos - target_pos)
+                        candidates.append((og_obj, distance))
+                    except Exception:
+                        continue
+        except Exception as e:
+            logger.warning(f"Error iterating OmniGibson objects: {e}")
+            return None
+        
+        if not candidates:
+            logger.warning(f"No OmniGibson objects found with category '{target_category}'")
+            return None
+        
+        # 5. Select closest match
+        candidates.sort(key=lambda x: x[1])
+        best_match, best_distance = candidates[0]
+        
+        # Distance threshold warning
+        MAX_MATCH_DISTANCE = 1.0  # meters
+        if best_distance > MAX_MATCH_DISTANCE:
+            logger.warning(
+                f"Best match for {obj_id} ({target_category}) is {best_distance:.2f}m away, "
+                f"may be incorrect. OG name: {getattr(best_match, 'name', 'unknown')}"
+            )
+        else:
+            logger.debug(
+                f"Matched {obj_id} -> {getattr(best_match, 'name', 'unknown')} "
+                f"(distance: {best_distance:.3f}m)"
+            )
+        
+        # Cache the result
+        self._object_match_cache[obj_id] = best_match
+        return best_match
+    
+    def set_scene_graph(self, scene_graph: "SceneGraph") -> None:
+        """
+        Set or update the scene graph for object lookup.
+        
+        Also clears the object match cache since positions may have changed.
+        
+        Args:
+            scene_graph: phy_plan SceneGraph instance
+        """
+        self.scene_graph = scene_graph
+        self._object_match_cache.clear()
+        logger.info(f"Scene graph updated, object cache cleared")
+    
+    def clear_object_cache(self) -> None:
+        """Clear the object match cache."""
+        self._object_match_cache.clear()
     
     def _navigate(self, action: Action) -> Tuple[bool, str]:
         """Navigate to a location or object (legacy interface)."""

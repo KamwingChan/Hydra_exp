@@ -1,0 +1,48 @@
+# Label space configuration for BEHAVIOR/OmniGibson simulation
+# 
+# NOTE: phy_graph 通过 category 名称（DSG node.name）来过滤物体，
+# 不需要 semantic_label ID 映射。
+# 如果 Hydra 需要语义映射，参考 hydra/config/datasets/behavior.yaml
+
+# 包含的物体类别（与机器人操作任务相关的物体）
+# NOTE: lamp 和 plant 这种装饰性物体不应该在里面
+included_categories:
+  # 可坐的家具
+  - "chair"
+  - "swivel_chair"
+  - "eames_chair"
+  - "armchair"
+  - "sofa"
+  - "couch"
+  - "bed"
+  
+  # 可放置物品的家具
+  - "table"
+  - "conference_table"
+  - "desk"
+  - "coffee_table"
+  - "cabinet"
+  - "shelf"
+  - "bookshelf"
+  
+  # 可交互的电子设备
+  - "tv"
+  - "monitor"
+  
+  # 可抓取的小物体
+  - "coffee_cup"
+  - "cup"
+  - "bottle"
+  - "book"
+
+# 排除的物体模式（场景结构和机器人本身）
+excluded_patterns:
+  - "wall*"
+  - "floor*"
+  - "ceiling*"
+  - "agent*"
+  - "robot*"
+  - "lamp*"      # 装饰性物体
+  - "plant*"     # 装饰性物体
+  - "picture*"   # 装饰性物体
+  - "rug*"       # 装饰性物体

@@ -271,12 +271,12 @@ PhysicalInferenceNode::projectObjectToImage(
     else if (visibility > 0.3) result.score += visibility_max * 0.57;
     else result.score += visibility_max * 0.29;
     
-    // 2. Coverage score (35 or 40 points max) - object size in image
+    // 2. Coverage score (30 or 40 points max) - object size in image
     double bbox_area = result.bbox.width * result.bbox.height;
     double img_area = image_size.width * image_size.height;
     result.coverage = bbox_area / img_area;
     
-    double coverage_max = use_occlusion ? 35.0 : 40.0;
+    double coverage_max = use_occlusion ? 30.0 : 40.0;
     // Prefer coverage between 5% and 50% (sweet spot for object recognition)
     if (result.coverage > 0.1 && result.coverage < 0.5) {
         result.score += coverage_max;  // Optimal range
@@ -288,7 +288,7 @@ PhysicalInferenceNode::projectObjectToImage(
         result.score += coverage_max * 0.125;  // Very small objects get low score
     }
     
-    // 3. Occlusion score (15 points max) - NEW: how much of the object is unoccluded
+    // 3. Occlusion score (25 points max) - NEW: how much of the object is unoccluded
     if (use_occlusion) {
         result.occlusion_score = calculateOcclusionScore(attrs, depth_image, world_T_camera, image_size);
         result.score += result.occlusion_score;
@@ -296,19 +296,19 @@ PhysicalInferenceNode::projectObjectToImage(
         result.occlusion_score = cfg.occlusion.max_score;  // Full score if not checking
     }
     
-    // 4. Center score (8 or 10 points max) - reduced weight, not critical for VLM
+    // 4. Center score (5 or 10 points max) - reduced weight, not critical for VLM
     double cx_bbox = result.bbox.x + result.bbox.width / 2.0;
     double cy_bbox = result.bbox.y + result.bbox.height / 2.0;
     double cx_img = image_size.width / 2.0;
     double cy_img = image_size.height / 2.0;
     double dist_to_center = std::sqrt(std::pow(cx_bbox - cx_img, 2) + std::pow(cy_bbox - cy_img, 2));
     double max_dist = std::sqrt(cx_img*cx_img + cy_img*cy_img);
-    double center_max = use_occlusion ? 8.0 : 10.0;
+    double center_max = use_occlusion ? 5.0 : 10.0;
     result.score += (1.0 - (dist_to_center / max_dist)) * center_max;
     
-    // 5. Margin score (12 or 15 points max) - object fully in frame
+    // 5. Margin score (10 or 15 points max) - object fully in frame
     const int margin = 20;
-    double margin_max = use_occlusion ? 12.0 : 15.0;
+    double margin_max = use_occlusion ? 10.0 : 15.0;
     if (result.bbox.x > margin && result.bbox.y > margin &&
         result.bbox.x + result.bbox.width < image_size.width - margin &&
         result.bbox.y + result.bbox.height < image_size.height - margin) {

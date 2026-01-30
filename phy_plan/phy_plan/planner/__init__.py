@@ -1,10 +1,29 @@
 """
-planner: 规划器模块
+planner: Task Planning Module
 
-- llm_planner: LLM 规划器
-- llm_planner_pipeline: LLM 规划 Pipeline
-- spatial_resolver: 空间推理解析器
-- dynamic_planner: 动态重规划 Pipeline
+Architecture:
+    LLMPlanner: Core planning logic (LLM calls, response parsing, physics validation)
+        - Public API: plan(), parse_response(), convert_to_task_sequence(), enrich_candidates()
+        - Conversation: init_conversation(), chat(), reset_conversation()
+        
+    LLMPlannerPipeline: Interactive planning pipeline
+        - Scene graph management
+        - User interaction (clarification, confirmation)
+        - Multi-turn dialogue support
+        
+    DynamicPlannerPipeline: Execution with dynamic replanning
+        - Execution monitoring
+        - Scene change detection (via ChangeDetector)
+        - Hybrid replanning triggers (failure + scene change)
+        
+    SpatialResolver: Automatic spatial reference resolution
+        - Reduces unnecessary user clarification
+        - Supports "nearest", "closest to", etc.
+
+Key Features:
+    1. Physics-aware planning (via PhysicsAgent)
+    2. Dynamic scene monitoring (via ChangeDetector)
+    3. Spatial reasoning (via SpatialResolver)
 """
 
 from .llm_planner import LLMPlanner, ClarificationRequest, InfeasiblePlan

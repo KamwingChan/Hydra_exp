@@ -1,0 +1,20 @@
+# LLM Configuration
+model: gpt-4o
+base_url: null  # null 表示使用默认，或填写 "https://openrouter.ai/api/v1"
+
+# Planning Configuration
+max_replan_attempts: 2
+enable_spatial_resolver: true
+verbose: true
+
+# Robot Physical Capabilities
+robot:
+  max_weight_level: 1  # 0=轻, 1=中等, 2=重
+  can_push_heavy: false
+  gripper_max_width: 0.15  # meters
+  min_confidence_threshold: 50  # 0-100
+
+# ROS Configuration (for ROS mode)
+ros:
+  topic: "/phy_graph/scene_graph_full"
+  wait_timeout: 30  # seconds

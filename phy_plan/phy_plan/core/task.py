@@ -16,7 +16,8 @@ class ActionType(Enum):
     """action type enumeration"""
     # 物体操作
     PICK = "pick"                 # pick object
-    PLACE = "place"               # place object on a surface
+    PLACE = "place"               # place object on a surface (place_on_top)
+    PLACE_INSIDE = "place_inside" # place object inside a container (fridge, drawer, etc.)
     MOVE_OBJECT = "move_object"   # move object (combination of pick and place)
     # robot movement
     NAVIGATE = "navigate"         # navigate to a position

@@ -74,16 +74,16 @@ class ValidationResult:
         if self.is_valid:
             return ""
         
-        lines = ["物理约束验证失败:"]
+        lines = ["physics constraint validation failed:"]
         for v in self.violations:
             lines.append(f"- {v.message}")
         
         if self.warnings:
-            lines.append("\n警告:")
+            lines.append("\nwarnings:")
             for w in self.warnings:
                 lines.append(f"- {w}")
         
-        lines.append("\n请考虑以上约束重新规划。")
+        lines.append("\nplease consider the above constraints and re-plan.")
         return "\n".join(lines)
 
 
@@ -185,14 +185,14 @@ class PhysicsAwareAgent:
                 action=action,
                 constraint_type=ConstraintType.OBJECT_NOT_FOUND,
                 object_id=obj_id,
-                message=f"物体 {obj_id} 在场景图中未找到"
+                message=f"object {obj_id} not found in scene graph"
             )
         
         # Get physical properties
         phys = obj.physical_properties
         if not phys:
             # No physical properties - generate warning but allow
-            return True, f"物体 {obj_id} ({obj.category}) 缺少物理属性，无法验证可行性", None
+            return True, f"object {obj_id} ({obj.category}) missing physical properties, cannot be validated", None
         
         # Check based on action type
         if action.action_type == ActionType.PICK:
@@ -224,19 +224,19 @@ class PhysicsAwareAgent:
         
         # Check inference confidence first
         if phys.inference_confidence >= 0 and phys.inference_confidence < self.capability.min_confidence_threshold:
-            return True, f"物体 {obj_id} ({obj.category}) 物理属性推断置信度较低 ({phys.inference_confidence}%)，建议先观察确认", None
+            return True, f"object {obj_id} ({obj.category}) physical property inference confidence is low ({phys.inference_confidence}%), suggest observing first", None
         
         # Check weight constraint
         if phys.weight_level > self.capability.max_weight_level:
-            weight_desc = ["轻", "中等", "重"][phys.weight_level] if phys.weight_level <= 2 else "未知"
-            estimated = f" (估计 {phys.estimated_weight_kg} kg)" if phys.estimated_weight_kg else ""
+            weight_desc = ["light", "medium", "heavy"][phys.weight_level] if phys.weight_level <= 2 else "unknown"
+            estimated = f" (estimated {phys.estimated_weight_kg} kg)" if phys.estimated_weight_kg else ""
             
             return False, "", ConstraintViolation(
                 action_index=action_index,
                 action=action,
                 constraint_type=ConstraintType.WEIGHT_EXCEEDED,
                 object_id=obj_id,
-                message=f"物体 {obj_id} ({obj.category}) 太重 (weight_level={phys.weight_level}, {weight_desc}{estimated})，机器人无法搬运 (最大支持 weight_level={self.capability.max_weight_level})",
+                message=f"object {obj_id} ({obj.category}) is too heavy (weight_level={phys.weight_level}, {weight_desc}{estimated}), robot cannot carry (max supported weight_level={self.capability.max_weight_level})",
                 details={
                     "object_weight_level": phys.weight_level,
                     "robot_max_weight_level": self.capability.max_weight_level,
@@ -285,7 +285,7 @@ class PhysicsAwareAgent:
                 action=action,
                 constraint_type=ConstraintType.NOT_PUSHABLE,
                 object_id=obj_id,
-                message=f"物体 {obj_id} ({obj.category}) 无法推动 (pushable=false，可能固定或太重)",
+                message=f"object {obj_id} ({obj.category}) cannot be pushed (pushable=false, possibly fixed or too heavy)",
                 details={
                     "pushable": phys.pushable,
                     "weight_level": phys.weight_level
@@ -299,7 +299,7 @@ class PhysicsAwareAgent:
                 action=action,
                 constraint_type=ConstraintType.WEIGHT_EXCEEDED,
                 object_id=obj_id,
-                message=f"物体 {obj_id} ({obj.category}) 太重 (weight_level={phys.weight_level})，机器人无法推动",
+                message=f"object {obj_id} ({obj.category}) is too heavy (weight_level={phys.weight_level}), robot cannot push",
                 details={
                     "weight_level": phys.weight_level,
                     "can_push_heavy": self.capability.can_push_heavy
@@ -329,12 +329,12 @@ class PhysicsAwareAgent:
                     action=action,
                     constraint_type=ConstraintType.OBJECT_NOT_FOUND,
                     object_id=obj_id,
-                    message=f"ARRANGE 动作中的物体 {obj_id} 在场景图中未找到"
+                    message=f"object {obj_id} not found in scene graph"
                 ))
                 continue
             
             if not obj.physical_properties:
-                warnings.append(f"ARRANGE 动作中的物体 {obj_id} ({obj.category}) 缺少物理属性")
+                warnings.append(f"object {obj_id} ({obj.category}) missing physical properties, cannot be validated")
                 continue
             
             # Check each object can be picked
@@ -385,7 +385,7 @@ class PhysicsAwareAgent:
                         )
             
             if alternatives:
-                return f"建议替代物体: {', '.join(alternatives[:3])}"
+                return f"suggest alternative objects: {', '.join(alternatives[:3])}"
         
         elif violation.constraint_type == ConstraintType.NOT_PUSHABLE:
             obj = scene_graph.get_object(violation.object_id)
@@ -400,16 +400,16 @@ class PhysicsAwareAgent:
                     alternatives.append(candidate.node_id)
             
             if alternatives:
-                return f"建议可推动的替代物体: {', '.join(alternatives[:3])}"
+                return f"suggest pushable alternative objects: {', '.join(alternatives[:3])}"
         
         return None
     
     def get_capability_description(self) -> str:
         """Get human-readable description of robot capabilities"""
-        weight_desc = ["轻量", "中等重量", "重物"][min(self.capability.max_weight_level, 2)]
-        push_desc = "可以推动重物" if self.capability.can_push_heavy else "只能推动轻量物体"
+        weight_desc = ["light", "medium", "heavy"][min(self.capability.max_weight_level, 2)]
+        push_desc = "can push heavy objects" if self.capability.can_push_heavy else "can only push light objects"
         
         return (
-            f"机器人能力: 最大可操作{weight_desc}物体 (weight_level<={self.capability.max_weight_level}), "
-            f"{push_desc}, 夹爪最大宽度 {self.capability.gripper_max_width*100:.0f}cm"
+            f"robot capabilities: max supported {weight_desc} objects (weight_level<={self.capability.max_weight_level}), "
+            f"{push_desc}, gripper max width {self.capability.gripper_max_width*100:.0f}cm"
         )

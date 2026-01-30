@@ -85,16 +85,35 @@ class PhysicalInference:
             return {"error": f"Image encoding failed: {str(e)}"}
 
         prompt_text = f"""
-        Analyze the object in this image, which is a reprojected image from 3D reconstruction, and its quality may be degraded due to reconstruction artifacts. This object is labeled as a '{label}'. 
-        Based on the visual information, provide its estimated physical properties.
-        Return the information in a JSON object with the following keys and value types:
-        - "description": A brief string description of the object.
-        - "friction_level": An integer from 0 (very low friction, e.g., ice) to 2 (high friction, e.g., rubber).
-        - "pushable": An integer, 1 if a standard mobile robot could likely push it, 0 otherwise.
-        - "weight_level": An integer from 0 (light, e.g., plastic bottle) to 2 (heavy, e.g., metal cabinet).
-        - "estimated_weight_kg": A string representing the estimated weight range in kg (e.g., "0.5-2", "5-10", "20-50"). Be realistic based on the object type and apparent size.
-        
-        Do not include any text outside of the JSON object itself.
+        Analyze the object in this image. The image is reprojected from a 3D reconstruction pipeline and may contain visual artifacts.
+        The object is labeled as "{label}".
+
+        Return a JSON object with the following keys and value types:
+
+        - "description": A single string that includes:
+            1) Visual appearance (color, shape, material),
+            2) Spatial relations to nearby visible objects or surfaces,
+            3) Optional brief  description context.
+          Use the following format inside the string:
+            "[appearance] ... ; [spatial] relation1(target), relation2(target) ; [context] ..."
+
+          Spatial relation types must be chosen from:
+          ["on", "under", "inside", "attached_to", "left_of", "right_of", "front_of", "behind", "near", "touching"].
+
+        - "friction_level": Integer from 0 (very low friction) to 2 (high friction).
+
+        - "pushable": Integer, 1 if a standard mobile robot could likely push it, 0 otherwise.
+
+        - "weight_level": Integer from 0 (light) to 2 (heavy).
+
+        - "estimated_weight_kg": A string representing a realistic weight range in kilograms 
+          (for example: "0.1-0.5", "0.5-2", "5-10", "20-50").
+
+        Important rules:
+        - Only include spatial relations that can be reasonably inferred from the image.
+        - Do not hallucinate invisible objects.
+        - If uncertain due to reconstruction artifacts, use conservative wording such as "likely".
+        - Do not output any text outside the JSON object.
         """
 
         for attempt in range(max_retries):
@@ -103,6 +122,10 @@ class PhysicalInference:
                 response = self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[
+                        {
+                            "role": "system",
+                            "content": "You are a robotic perception engine. You output ONLY raw JSON. No markdown formatting, no explanations."
+                        },
                         {
                             "role": "user",
                             "content": [

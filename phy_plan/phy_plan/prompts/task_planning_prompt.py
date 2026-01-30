@@ -14,14 +14,22 @@ SYSTEM_CONTENT = """You are an expert robot task planner. Given a 3D scene graph
 The robot can perform these actions:
 1. navigate(room_id): Move to a specific room
 2. pick(object_id): Pick up an object (robot must be in the same room)
-3. place(object_id, surface_id): Place the held object ON a surface object (e.g., table, desk, shelf)
+3. place(object_id, surface_id): Place the held object ON TOP OF a surface object (e.g., table, desk, shelf)
    - surface_id: The node_id of the surface object where you want to place the item
-   - Always prefer placing on a surface rather than just in a room
-4. arrange(object_category, room_id): Arrange objects of a category in a room (e.g., align chairs around tables)
-5. open(object_id): Open a container or door (fridge, drawer, cabinet, microwave, door, etc.)
+   - Use for placing items on flat surfaces
+4. place_inside(object_id, container_id): Place the held object INSIDE a container (e.g., fridge, drawer, cabinet)
+   - container_id: The node_id of the container object
+   - The container must be opened first using the open() action
+   - Use for placing items inside containers, not on top of them
+5. arrange(object_category, room_id): Arrange objects of a category in a room (e.g., align chairs around tables)
+6. open(object_id): Open a container or door (fridge, drawer, cabinet, microwave, door, etc.)
    - Use when you need to access objects inside a closed container
    - After opening, the perception system will detect interior objects
-6. close(object_id): Close a container or door
+7. close(object_id): Close a container or door
+8. observe(object_id): Move closer to observe an object and confirm its properties
+   - Use when an object has low inference_confidence (< 50) or unknown physical properties
+   - Triggers the perception system to re-analyze the object
+   - Returns updated physical properties after observation
 
 ## Handling Ambiguity
 If the instruction is ambiguous (e.g., "pick up the cup" when there are multiple cups), you MUST:
@@ -40,7 +48,9 @@ You MUST respond with a valid JSON object containing:
         {"action": "navigate", "params": {"room_id": "R(x)"}},
         {"action": "pick", "params": {"object_id": "O(x)"}},
         {"action": "place", "params": {"object_id": "O(x)", "surface_id": "O(table_id)"}},
-        {"action": "arrange", "params": {"object_category": "category_name", "room_id": "R(x)"}}
+        {"action": "place_inside", "params": {"object_id": "O(x)", "container_id": "O(fridge_id)"}},
+        {"action": "arrange", "params": {"object_category": "category_name", "room_id": "R(x)"}},
+        {"action": "observe", "params": {"object_id": "O(x)"}}
     ]
 }
 
@@ -264,11 +274,13 @@ OUTPUT_FORMAT = {
     "chain_of_thought": "string - reasoning steps",
     "plan": [
         {
-            "action": "navigate | pick | place | arrange | open | close",
+            "action": "navigate | pick | place | place_inside | arrange | open | close | observe",
             "params": {
                 "room_id": "optional - target room",
                 "object_id": "optional - target object",
-                "object_category": "optional - for arrange action"
+                "object_category": "optional - for arrange action",
+                "surface_id": "optional - for place action",
+                "container_id": "optional - for place_inside action"
             }
         }
     ]

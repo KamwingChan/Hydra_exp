@@ -1,80 +1,80 @@
-# phy_graph 推理配置文件
+# phy_graph inference config
 
-# === 图像处理参数 ===
+# === Image processing parameters ===
 image:
-  # 裁剪后最小尺寸（像素），小于此值的图像将被跳过
-  min_crop_size: 64
-  # bbox 扩展比例（0.3 = 30% padding）
-  padding_factor: 0.3
-  # 最低可接受的图像评分（0-100）
+  # Minimum crop size after crop (pixels), images smaller than this will be skipped
+  min_crop_size: 48
+  # Bounding box expansion factor (0.3 = 30% padding)
+  padding_factor: 0.5
+  # Minimum acceptable image score (0-100)
   score_threshold: 60.0
-  # 高质量阈值，达到此分数立即推理
+  # High quality threshold, inference will be triggered when this score is reached
   high_quality_threshold: 70.0
-  # 投影模式: "mesh_vertices" (原方法，精确但慢) 或 "hydra_bbox" (快速，依赖Hydra bbox)
+  # Projection mode: "mesh_vertices" (original method, accurate but slow) or "hydra_bbox" (fast, depends on Hydra bbox)
   projection_mode: "hydra_bbox"
 
-# === 关键帧数据库参数 ===
+# === Keyframe database parameters ===
 keyframe:
-  # 内存中保留的最大帧数
-  max_memory_frames: 3000
-  # 关键帧最小位移 (米)
+  # Maximum number of frames to retain in memory
+  max_memory_frames: 2000
+  # Minimum translation threshold for keyframes (meters)
   min_translation: 0.2
-  # 关键帧最小旋转 (弧度)
+  # Minimum rotation threshold for keyframes (radians)
   min_rotation: 0.1
-  # 关键帧最小时间间隔 (秒)
+  # Minimum time interval between keyframes (seconds)
   min_time_interval: 0.2
-  # 图像搜索时间窗口 (秒)
+  # Image search time window (seconds)
   time_window: 8.0
-  # RGB抽帧比：每N帧处理一次（15Hz输入时: 5=3Hz, 10=1.5Hz）
+  # RGB frame skip ratio: process every N frames (15Hz input: 5=3Hz, 10=1.5Hz)
   frame_skip: 5
 
-# === 推理队列参数 ===
+# === Inference queue parameters ===
 inference:
-  # 并行 worker 数量（1 = 串行，推荐从 1 开始）
+  # Number of parallel workers (1 = serial, recommended to start from 1)
   num_workers: 1
-  # 队列最大长度
+  # Maximum queue length
   max_queue_size: 100
-  # 最大延迟次数（超过后抑制直到新观测）
+  # Maximum defer count (after which new observations are suppressed)
   max_defer_count: 5
-  # 等待超时 (秒)，超时后强制使用当前最佳图像
+  # Wait timeout (seconds), after which current best image is forced to be used
   wait_timeout: 5.0
-  # 超时强制入队的最低分数要求 (防止黑屏/极低质量图像)
+  # Minimum acceptable score for forced enqueue (to prevent black screens/low quality images)
   min_acceptable_score: 50.0
-  # 主循环频率 (Hz)
+  # Main loop frequency (Hz)
   loop_rate: 0.5
 
 # === VLM 服务参数 ===
 vlm:
-  # 使用的模型名称
+  # Model name
   model_name: "openai/gpt-4o-mini"
-  # API 调用最大重试次数
+  # Maximum number of API retries
   max_retries: 3
-  # API 超时时间 (秒)
+  # API timeout (seconds)
   timeout_seconds: 30
-  # Dry-run 模式：true 时跳过实际 API 调用，返回模拟结果
+  # Dry-run mode: true skips actual API calls, returns simulated results
   dry_run: false
 
-# === 物体成熟度参数 ===
+# === Object maturity parameters ===
 object_maturity:
-  # 物体最小"成熟"时间（秒），等待 Hydra bbox 稳定
+  # Minimum "maturity" time for objects (seconds), waiting for Hydra bbox to stabilize
   min_age_seconds: 1.0
-  # 是否启用成熟度检测
+  # Whether to enable maturity detection
   enable: true
 
-# === 遮挡检测参数 ===
+# === Occlusion detection parameters ===
 occlusion:
-  # 是否启用遮挡检测（需要深度图）
+  # Whether to enable occlusion detection (requires depth map)
   enable: true
-  # 深度比较阈值（米），物体深度 > 深度图深度 + 阈值 时认为被遮挡
+  # Depth comparison threshold (meters), object depth > depth map depth + threshold is considered occluded
   depth_threshold: 0.1
-  # 遮挡检测采样点数（从bbox/mesh中采样，减少计算量）
+  # Number of occlusion detection sample points (from bbox/mesh, reducing computation)
   sample_points: 50
-  # 遮挡评分最大分值（未遮挡时获得满分）
-  max_score: 15
+  # Maximum occlusion score (full score when not occluded)
+  max_score: 25
 
-# === 调试参数 ===
+# === Debug parameters ===
 debug:
-  # 是否保存用于推理的图像
+  # Whether to save images for inference
   save_images: true
-  # 详细日志输出
+  # Detailed log output
   verbose: false

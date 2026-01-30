@@ -1,0 +1,79 @@
+<launch>
+    <!-- 
+    behavior_offline.launch: BEHAVIOR 离线模式 (rosbag 回放)
+    
+    用于 rosbag 回放场景的物理推断。
+    从 JSON 文件发布 DSG，配合 rosbag 播放的 RGB/Depth/TF 进行物理推断。
+    
+    Usage:
+        roslaunch phy_graph behavior_offline.launch json_path:=/path/to/scene.json
+        
+        # 然后在另一个终端播放 rosbag:
+        rosbag play recording.bag
+    -->
+
+    <!-- Required: Path to BEHAVIOR JSON file -->
+    <arg name="json_path" />
+    
+    <!-- Optional: Categories to extract from JSON -->
+    <arg name="categories" default="" />
+    
+    <!-- Argument to select the label space -->
+    <arg name="label_space" default="behavior" />
+    
+    <!-- Topic arguments for rosbag playback -->
+    <arg name="rgb_topic" default="/camera/color/image_raw" />
+    <arg name="depth_topic" default="/camera/depth/image_raw" />
+    <arg name="camera_info_topic" default="/camera/camera_info" />
+    <arg name="debug_save_images" default="false" />
+    
+    <!-- DSG publishing rate -->
+    <arg name="dsg_rate" default="2.0" />
+    
+    <!-- Inference configuration file -->
+    <arg name="inference_config" default="$(find phy_graph)/config/inference_config.yaml" />
+    
+    <!-- Start the JSON DSG publisher -->
+    <node name="behavior_dsg_publisher"
+          pkg="phy_graph"
+          type="behavior_dsg_from_json.py"
+          output="screen">
+        <param name="json_path" value="$(arg json_path)" />
+        <param name="rate" value="$(arg dsg_rate)" />
+        <param name="categories" value="$(arg categories)" if="$(eval categories != '')" />
+    </node>
+    
+    <!-- Start the Python service for physical property inference (VLM) -->
+    <node name="phy_graph_server"
+          pkg="phy_graph"
+          type="module.py"
+          output="screen">
+    </node>
+
+    <!-- Start the C++ node for physical inference -->
+    <node name="phy_graph_node"
+          pkg="phy_graph"
+          type="phy_graph_node"
+          output="screen">
+        <!-- Remap topics for rosbag playback -->
+        <remap from="rgb_image" to="$(arg rgb_topic)" />
+        <remap from="depth_image" to="$(arg depth_topic)" />
+        <remap from="camera_info" to="$(arg camera_info_topic)" />
+
+        <!-- Load inference configuration -->
+        <rosparam command="load" file="$(arg inference_config)" ns="inference" />
+
+        <!-- Load label space configuration -->
+        <rosparam command="load" file="$(find phy_graph)/config/label_spaces/$(arg label_space).yaml" />
+        <param name="label_space" value="$(arg label_space)" />
+        <param name="/debug_save_images" value="$(arg debug_save_images)"/>
+    </node>
+    
+    <!-- Start the Graph Generator Node -->
+    <node name="graph_generator_node" 
+          pkg="phy_graph" 
+          type="graph_generator_node" 
+          output="screen">
+    </node>
+
+</launch>

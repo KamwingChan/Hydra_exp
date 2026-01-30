@@ -56,7 +56,7 @@ def choose_scene(scene_name, scene_file):
 
 
 class ROSBehavior:
-    def __init__(self, env, record_rosbag=False):
+    def __init__(self, env, record_rosbag=False, publish_dsg=False):
         self.env = env
         self.sensor = og.sim.viewer_camera
         self.camera_mover = None 
@@ -64,6 +64,7 @@ class ROSBehavior:
         self.rate = 15  # 发布频率 Hz
         self.is_running = True
         self.record_rosbag = record_rosbag
+        self.publish_dsg = publish_dsg
         
         # resolution
         self.width = 640
@@ -90,6 +91,11 @@ class ROSBehavior:
         self.bag = None
         self.bag_name = None
         
+        # DSG publisher (for phy_graph)
+        self.dsg_publisher = None
+        self.dsg_publish_counter = 0
+        self.dsg_publish_interval = 5  # 每 5 帧发布一次 DSG
+        
         # ID 映射相关
         self.id_mapping = {}  # 大ID -> 小ID 的字典
         self._load_id_mapping()
@@ -98,6 +104,7 @@ class ROSBehavior:
         self._setup_ros()
         self._setup_camera_mover()
         self._setup_rosbag()
+        self._setup_dsg_publisher()
 
     def _setup_camera_mover(self):
         viewer_cam = self.sensor
@@ -146,6 +153,25 @@ class ROSBehavior:
             self.record_rosbag = False
             self.bag = None
             self.bag_name = None
+    
+    def _setup_dsg_publisher(self):
+        """Initialize DSG publisher if enabled."""
+        if not self.publish_dsg:
+            return
+        
+        try:
+            from util.dsg_utils import DsgPublisher
+            self.dsg_publisher = DsgPublisher()
+            rospy.loginfo("DSG publishing enabled for phy_graph")
+        except ImportError as e:
+            rospy.logwarn(f"Failed to import DsgPublisher: {e}")
+            rospy.logwarn("DSG publishing disabled. Make sure spark_dsg and hydra_msgs are available.")
+            self.publish_dsg = False
+            self.dsg_publisher = None
+        except Exception as e:
+            rospy.logerr(f"Failed to initialize DsgPublisher: {e}")
+            self.publish_dsg = False
+            self.dsg_publisher = None
 
     def _record_if_needed(self, topic, msg, stamp):
         """Record message into rosbag if recording is active."""
@@ -381,6 +407,16 @@ class ROSBehavior:
             sem_msg.header.frame_id = frame_id
             self.pub_sem.publish(sem_msg)
             self._record_if_needed(self.semantic_topic, sem_msg, current_time)
+        
+        # 7. publish DSG (for phy_graph) - at lower frequency
+        if self.dsg_publisher:
+            self.dsg_publish_counter += 1
+            if self.dsg_publish_counter >= self.dsg_publish_interval:
+                self.dsg_publish_counter = 0
+                try:
+                    self.dsg_publisher.build_and_publish(self.env.scene, current_time)
+                except Exception as e:
+                    rospy.logwarn_throttle(10.0, f"Failed to publish DSG: {e}")
 
     def run(self):
         """
@@ -423,19 +459,42 @@ class ROSBehavior:
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--scene", type=str, default="office_vendor_machine")
-    parser.add_argument("--scene_file", type=str, default="/home/kamwing/catkin_ws/src/phy_plan/env/office_vendor_machine_0.json")
+    parser = argparse.ArgumentParser(
+        description="ROS1 Publisher for BEHAVIOR/OmniGibson Simulation",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic usage
+  python behavior_ros.py --scene office_vendor_machine
+  
+  # With DSG publishing for phy_graph
+  python behavior_ros.py --scene office_vendor_machine --publish_dsg true
+  
+  # Record rosbag
+  python behavior_ros.py --scene office_vendor_machine --rosbag true
+        """
+    )
+    parser.add_argument("--scene", type=str, default="office_vendor_machine",
+                        help="Scene name (default: office_vendor_machine)")
+    parser.add_argument("--scene_file", type=str, 
+                        default="/home/kamwing/catkin_ws/src/phy_plan/env/office_vendor_machine_0.json",
+                        help="Path to scene JSON file")
     parser.add_argument(
         "--rosbag",
         type=lambda x: str(x).lower() in ("1", "true", "yes"),
         default=False,
         help="Record all topics to rosbag (including TF and clock) when true",
     )
+    parser.add_argument(
+        "--publish_dsg",
+        type=lambda x: str(x).lower() in ("1", "true", "yes"),
+        default=False,
+        help="Publish DSG messages for phy_graph (requires spark_dsg and hydra_msgs)",
+    )
     args = parser.parse_args()
     
     env = og.Environment(choose_scene(args.scene, args.scene_file))
-    ros_behavior = ROSBehavior(env, record_rosbag=args.rosbag)
+    ros_behavior = ROSBehavior(env, record_rosbag=args.rosbag, publish_dsg=args.publish_dsg)
     
     def shutdown():
         """clean up and exit"""

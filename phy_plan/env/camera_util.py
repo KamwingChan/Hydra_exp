@@ -10,6 +10,7 @@ import math
 import random
 from pathlib import Path
 from scipy.spatial.transform import Rotation as R
+from PIL import Image
 
 class CameraMover:
     """
@@ -47,18 +48,39 @@ class CameraMover:
         self._keyboard = self._appwindow.get_keyboard()
         self._sub_keyboard = self._input.subscribe_to_keyboard_events(self._keyboard, self._sub_keyboard_event)
 
-    def clear(self):
+    def disable(self):
         """
-        Clears this camera mover. After this is called, the camera mover cannot be used.
+        临时禁用键盘监听（可以恢复）
         """
-        # 防止重复清理
         if self._sub_keyboard is None:
             return
-            
         self._input.unsubscribe_to_keyboard_events(self._keyboard, self._sub_keyboard)
         self._sub_keyboard = None
         self.key_state.clear()  # 清空键盘状态
-        og.log.info("CameraMover keyboard subscription cleared.")
+        og.log.info("CameraMover keyboard disabled (can be re-enabled)")
+
+    def enable(self):
+        """
+        重新启用键盘监听（如果之前被禁用）
+        """
+        if self._sub_keyboard is not None:
+            return  # 已经启用了
+        try:
+            self._sub_keyboard = self._input.subscribe_to_keyboard_events(
+                self._keyboard, 
+                self._sub_keyboard_event
+            )
+            og.log.info("CameraMover keyboard re-enabled")
+        except Exception as e:
+            og.log.warn(f"Failed to re-enable CameraMover keyboard: {e}")
+
+    def clear(self):
+        """
+        完全清除（不可恢复，用于析构）
+        注意：调用 clear() 后，enable() 无法恢复，需要重新创建 CameraMover
+        """
+        self.disable()  # 复用 disable 的逻辑
+        og.log.info("CameraMover keyboard subscription cleared (cannot be re-enabled)")
 
     def __enter__(self):
         """支持上下文管理器"""

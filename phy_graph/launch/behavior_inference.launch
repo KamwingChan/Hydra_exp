@@ -1,0 +1,61 @@
+<launch>
+    <!-- 
+    behavior_inference.launch: BEHAVIOR 实时模式
+    
+    用于 BEHAVIOR/OmniGibson 仿真的实时物理推断。
+    behavior_ros.py 发布 RGB/Depth/TF 和 DSG，phy_graph 节点进行物理推断。
+    
+    Usage:
+        roslaunch phy_graph behavior_inference.launch
+        
+        # 然后在另一个终端运行 behavior_ros.py:
+        cd ~/catkin_ws/src/phy_plan/env
+        python behavior_ros.py - -scene office_vendor_machine - -publish_dsg true
+    -->
+
+    <!-- Argument to select the label space -->
+    <arg name="label_space" default="behavior" />
+    
+    <!-- Topic arguments for BEHAVIOR simulation -->
+    <arg name="rgb_topic" default="/camera/color/image_raw" />
+    <arg name="depth_topic" default="/camera/depth/image_raw" />
+    <arg name="camera_info_topic" default="/camera/camera_info" />
+    <arg name="debug_save_images" default="false" />
+    
+    <!-- Inference configuration file -->
+    <arg name="inference_config" default="$(find phy_graph)/config/inference_config.yaml" />
+    
+    <!-- Start the Python service for physical property inference (VLM) -->
+    <node name="phy_graph_server"
+          pkg="phy_graph"
+          type="module.py"
+          output="screen">
+    </node>
+
+    <!-- Start the C++ node for physical inference -->
+    <node name="phy_graph_node"
+          pkg="phy_graph"
+          type="phy_graph_node"
+          output="screen">
+        <!-- Remap topics for BEHAVIOR simulation -->
+        <remap from="rgb_image" to="$(arg rgb_topic)" />
+        <remap from="depth_image" to="$(arg depth_topic)" />
+        <remap from="camera_info" to="$(arg camera_info_topic)" />
+
+        <!-- Load inference configuration -->
+        <rosparam command="load" file="$(arg inference_config)" ns="inference" />
+
+        <!-- Load label space configuration -->
+        <rosparam command="load" file="$(find phy_graph)/config/label_spaces/$(arg label_space).yaml" />
+        <param name="label_space" value="$(arg label_space)" />
+        <param name="/debug_save_images" value="$(arg debug_save_images)"/>
+    </node>
+    
+    <!-- Start the Graph Generator Node -->
+    <node name="graph_generator_node" 
+          pkg="phy_graph" 
+          type="graph_generator_node" 
+          output="screen">
+    </node>
+
+</launch>

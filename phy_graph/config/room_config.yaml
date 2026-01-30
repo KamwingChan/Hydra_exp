@@ -4,40 +4,141 @@ room_rules:
     wardrobe: 5
     nightstand: 3
     pillow: 2
+    table_lamp: 2
+    floor_lamp: 2
+    mirror: 3
+    carpet: 2
+    alarm_clock: 2
   Bathroom:
     toilet: 10
     shower: 8
     bathtub: 8
     sink: 3
-    towel: 2
+    bath_towel: 2
+    hand_towel: 2
+    mirror: 3
+    toilet_paper: 2
+    soap_dispenser: 2
+    towel_rack: 2
   Kitchen:
     stove: 10
     oven: 10
-    refrigerator: 8
+    fridge: 8
     microwave: 5
     sink: 3
     cabinet: 2
+    dishwasher: 6
+    coffee_maker: 4
+    toaster: 3
+    kettle: 3
+    knife_block: 2
   LivingRoom:
-    couch: 8
+    sofa: 8
     tv: 5
     coffee_table: 3
-    lamp: 2
+    floor_lamp: 2
+    table_lamp: 2
+    fireplace: 6
+    bookcase: 4
+    carpet: 3
+    picture: 2
+    curtain: 2
+    armchair: 4
   Office:
-    monitor: 5
-    keyboard: 3
-    desk: 5
-    office_chair: 5
-    book: 2
+    desk: 8
+    monitor: 6
+    computer: 6
+    keyboard: 4
+    swivel_chair: 5
+    bookcase: 5
+    locker: 4
+    photocopier: 5
+    printer: 4
+    trash_can: 2
+    whiteboard: 3
+    file_cabinet: 4
+    bottom_cabinet: 3
+  ConferenceRoom:
+    conference_table: 10
+    swivel_chair: 6
+    eames_chair: 5
+    projector: 6
+    projection_screen: 6
+    whiteboard: 5
+    coffee_cup: 2
+    desk_phone: 3
   DiningRoom:
     dining_table: 8
     chair: 3
     plate: 2
+    sideboard: 4
+    chandelier: 3
+  BreakRoom:
+    vending_machine: 10
+    coffee_maker: 8
+    microwave: 6
+    fridge: 6
+    table: 4
+    chair: 3
+    sink: 3
+    coffee_cup: 3
+  LaundryRoom:
+    washer: 10
+    clothes_dryer: 10
+    laundry_basket: 5
+    ironing_board: 5
+  Garage:
+    car: 10
+    bicycle: 6
+    toolbox: 5
+    workbench: 5
+    tire: 3
+    ladder: 3
+    motorcycle: 8
+  Hallway:
+    shoe_rack: 6
+    coatrack: 5
+    umbrella_stand: 4
+    picture: 2
+    room_light: 2
+    door: 2
+  Gym:
+    treadmill: 10
+    exercise_bike: 8
+    gym_mat: 5
+    free_weight: 5
+    weight_bar: 5
 
 room_synonyms:
-  sofa: couch
+  # 基础映射
+  couch: sofa
+  standing_tv: tv
+  wall_mounted_tv: tv
   television: tv
-  coffee table: coffee_table
-  dining table: dining_table
+  refrigerator: fridge
+  washing_machine: washer
+  garbage_bin: trash_can
+  rubbish_bin: trash_can
+  picture_frame: picture
+  room_light: lamp
+  
+  # Hydra 标签映射
+  commercial_kitchen_sink: sink
+  tabletop_sink: sink
+  pedestal_sink: sink
+  furniture_sink: sink
+  drop_in_sink: sink
+  wall_mounted_soap_dispenser: soap_dispenser
+  gas_fireplace: fireplace
+  wood_fireplace: fireplace
+  commercial_kitchen_table: dining_table
+  breakfast_table: dining_table
+  folding_chair: chair
+  straight_chair: chair
+  rocking_chair: chair
+  desktop_computer: computer
+  laptop: computer
+  ceiling_mounted_projector: projector
+  ceiling_mounted_basketball_hoop: basketball_hoop
 
 room_stability_timeout: 1.5
-
