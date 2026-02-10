@@ -4,7 +4,6 @@ Primitive action controller with progress monitoring.
 import rospy
 import time
 import threading
-import psutil
 import torch
 import gc
 import omnigibson as og
@@ -15,7 +14,7 @@ import omnigibson.lazy as lazy
 class PrimitiveController:
     """Handles semantic action primitives with progress monitoring."""
     
-    def __init__(self, env, robot, curobo_batch_size=1):
+    def __init__(self, env, robot, curobo_batch_size=1, execution_mode=None):
         """
         Initialize primitive controller.
         
@@ -23,10 +22,12 @@ class PrimitiveController:
             env: OmniGibson environment
             robot: Robot instance
             curobo_batch_size: Batch size for CuRobo (default 1 for 8GB GPU)
+            execution_mode: ExecutionMode.FULL or ExecutionMode.SYMBOLIC (default: FULL)
         """
         self.env = env
         self.robot = robot
         self.curobo_batch_size = curobo_batch_size
+        self.execution_mode = execution_mode  # 保存执行模式
         
         self._primitive_api = None
         self._primitive_controller = None  # generator for primitive actions
@@ -76,9 +77,15 @@ class PrimitiveController:
                 rospy.loginfo(f"GPU memory before curobo init: {torch.cuda.memory_allocated()/1024**3:.2f} GB allocated, {torch.cuda.memory_reserved()/1024**3:.2f} GB reserved")
                 rospy.loginfo(f"GPU memory free: {(torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_reserved()) / 1024**3:.2f} GB")
             
-            from phy_plan.executor import BehaviorActionAPI
+            from phy_plan.executor import BehaviorActionAPI, ExecutionMode
             
-            # 进度提示
+            # 如果没有指定，默认使用 FULL 模式
+            if self.execution_mode is None:
+                execution_mode = ExecutionMode.FULL
+            else:
+                execution_mode = self.execution_mode
+            
+            # 进度提示（只在 FULL 模式下显示）
             progress_info = {'active': True, 'start_time': time.time()}
             
             def show_init_progress():
@@ -104,26 +111,57 @@ class PrimitiveController:
                     
                     time.sleep(5.0)  # 每5秒更新一次
             
-            progress_thread = threading.Thread(target=show_init_progress, daemon=True)
-            progress_thread.start()
+            # 只在 FULL 模式下启动进度提示线程
+            if execution_mode == ExecutionMode.FULL:
+                progress_thread = threading.Thread(target=show_init_progress, daemon=True)
+                progress_thread.start()
             
             try:
-                # 使用 batch_size=1 来减少 GPU 内存使用（默认是 3，对于 8GB GPU 可能不够）
-                rospy.loginfo("Initializing BehaviorActionAPI with curobo_batch_size=1...")
-                rospy.loginfo("⚠️  This may take 1-3 minutes. Please wait...")
+                # 根据模式显示不同的提示信息
+                if execution_mode == ExecutionMode.SYMBOLIC:
+                    rospy.loginfo("Initializing BehaviorActionAPI in SYMBOLIC mode (no CuRobo, teleport + physics)...")
+                    rospy.loginfo("✅ This will be fast and use minimal GPU memory")
+                    motion_cfg_kwargs = None
+                else:
+                    # 使用 batch_size=1 来减少 GPU 内存使用（默认是 3，对于 8GB GPU 可能不够）
+                    rospy.loginfo("Initializing BehaviorActionAPI with curobo_batch_size=1...")
+                    rospy.loginfo("⚠️  This may take 1-3 minutes. Please wait...")
+                    
+                    # 优化的 motion_cfg_kwargs 配置，减少 GPU 内存占用和初始化时间
+                    motion_cfg_kwargs = {
+                        # 减少 IK seeds（降低内存，稍微降低成功率）
+                        'num_ik_seeds': 64,  # 默认 128，减少到 64
+                        'num_batch_ik_seeds': 64,  # 默认 128
+                        
+                        # 减少 trajopt seeds（降低内存）
+                        'num_trajopt_seeds': 2,  # 默认 4
+                        'num_graph_seeds': 2,  # 默认 4
+                        
+                        # 减少迭代次数（加快速度，稍微降低质量）
+                        'ik_opt_iters': 50,  # 默认 100
+                        'finetune_trajopt_iters': 50,  # 默认 100
+                        
+                        # 减少轨迹优化步数（降低内存）
+                        'trajopt_tsteps': 16,  # 默认 32
+                    }
+                    rospy.loginfo("Using optimized motion_cfg_kwargs to reduce GPU memory usage")
                 
                 self._primitive_api = BehaviorActionAPI(
                     self.env, 
                     self.robot,
-                    curobo_batch_size=self.curobo_batch_size
+                    mode=execution_mode,  # 传递执行模式
+                    curobo_batch_size=self.curobo_batch_size,
+                    motion_cfg_kwargs=motion_cfg_kwargs
                 )
                 
                 # 停止进度提示
-                progress_info['active'] = False
+                if execution_mode == ExecutionMode.FULL:
+                    progress_info['active'] = False
                 elapsed = time.time() - progress_info['start_time']
                 
-                rospy.loginfo(f"✅ BehaviorActionAPI initialized successfully in {elapsed:.1f}s (curobo_batch_size=1)")
-                if torch.cuda.is_available():
+                mode_str = "SYMBOLIC" if execution_mode == ExecutionMode.SYMBOLIC else "FULL"
+                rospy.loginfo(f"✅ BehaviorActionAPI initialized successfully in {elapsed:.1f}s (mode: {mode_str})")
+                if torch.cuda.is_available() and execution_mode == ExecutionMode.FULL:
                     rospy.loginfo(f"GPU memory after curobo init: {torch.cuda.memory_allocated()/1024**3:.2f} GB / {torch.cuda.memory_reserved()/1024**3:.2f} GB reserved")
                 return True
             except Exception as e:
@@ -191,9 +229,8 @@ class PrimitiveController:
                 return False
         
         try:
-            from omnigibson.action_primitives.starter_semantic_action_primitives import (
-                StarterSemanticActionPrimitiveSet,
-            )
+            # 使用 BehaviorActionAPI 中保存的正确的 PrimitiveSet
+            primitive_set = self._primitive_api._primitive_set
             
             # 启动 primitive（返回一个 generator）
             rospy.loginfo(f"Starting navigate_to: {target.name}")
@@ -202,7 +239,7 @@ class PrimitiveController:
                 with og.sim.paused():
                     rospy.loginfo("Creating primitive generator (simulation paused)...")
                     self._primitive_controller = self._primitive_api.controller.apply_ref(
-                        StarterSemanticActionPrimitiveSet.NAVIGATE_TO,
+                        primitive_set.NAVIGATE_TO,
                         target,
                         attempts=3
                     )
@@ -223,112 +260,22 @@ class PrimitiveController:
     
     def _get_action_with_progress(self):
         """
-        Get next action from primitive generator with progress monitoring.
+        Get next action from primitive generator.
+        
+        NOTE: 不使用 og.sim.paused()，因为每帧的 pause→play 循环会触发
+        play() → render() → update_handles() → _non_physics_step()，
+        造成不必要的开销和潜在的 FlatCache 数据不一致。
+        generator 只是读取当前位姿并计算速度命令，不需要暂停仿真。
         
         Returns:
             action: Robot action array
         """
-        # 记录开始时间
-        start_time = time.time()
-        
-        # 创建进度信息字典（内存占用很小，只有几个数值）
-        progress_info = {
-            'active': True,
-            'start_time': start_time,
-            'last_gpu_memory': 0.0
-        }
-        
-        # 在后台线程中定期输出详细进度
-        def show_progress():
-            interval = 2.0  # 每2秒输出一次
-            
-            while progress_info['active']:
-                elapsed = time.time() - progress_info['start_time']
-                
-                if elapsed > 1.0:  # 超过1秒才开始显示
-                    # 获取系统资源使用
-                    try:
-                        cpu_percent = psutil.cpu_percent(interval=0.1)
-                    except:
-                        cpu_percent = 0.0
-                    
-                    # 获取 GPU 使用（如果可用）
-                    gpu_info = ""
-                    stage_hint = ""
-                    if torch.cuda.is_available():
-                        try:
-                            gpu_memory = torch.cuda.memory_allocated() / 1024**3
-                            gpu_reserved = torch.cuda.memory_reserved() / 1024**3
-                            gpu_info = f"GPU: {gpu_memory:.2f}GB/{gpu_reserved:.2f}GB"
-                            
-                            # 检测 GPU 内存变化来判断是否在计算
-                            if abs(gpu_memory - progress_info['last_gpu_memory']) > 0.01:
-                                stage_hint = " (GPU active)"
-                                progress_info['last_gpu_memory'] = gpu_memory
-                        except:
-                            gpu_info = "GPU: N/A"
-                    
-                    # 估算阶段（基于时间）
-                    if elapsed < 5:
-                        stage_guess = "Initializing"
-                    elif elapsed < 15:
-                        stage_guess = "IK solving / Trajectory optimization"
-                    elif elapsed < 30:
-                        stage_guess = "Collision checking / Refinement"
-                    else:
-                        stage_guess = "Long computation"
-                        stage_hint += " ⚠️"
-                    
-                    # 组合进度信息
-                    progress_msg = (
-                        f"[Motion Planning] {stage_guess}{stage_hint} | "
-                        f"Time: {elapsed:.1f}s | "
-                        f"CPU: {cpu_percent:.1f}%"
-                    )
-                    
-                    if gpu_info:
-                        progress_msg += f" | {gpu_info}"
-                    
-                    rospy.loginfo(progress_msg)
-                
-                time.sleep(interval)
-        
-        progress_thread = threading.Thread(target=show_progress, daemon=True)
-        progress_thread.start()
-        
         try:
-            # 在获取 action 时暂停仿真（因为可能涉及运动规划计算）
-            rospy.loginfo("Getting next action from primitive generator (motion planning may take time, simulation paused)...")
-            with og.sim.paused():
-                action = next(self._primitive_controller)
-            
-            # 停止进度提示
-            progress_info['active'] = False
-            elapsed = time.time() - start_time
-            
-            # 最终统计
-            try:
-                final_cpu = psutil.cpu_percent(interval=0.1)
-            except:
-                final_cpu = 0.0
-            
-            final_info = f"Completed in {elapsed:.2f}s | CPU: {final_cpu:.1f}%"
-            if torch.cuda.is_available():
-                try:
-                    final_gpu = torch.cuda.memory_allocated() / 1024**3
-                    final_info += f" | GPU: {final_gpu:.2f}GB"
-                except:
-                    pass
-            
-            rospy.loginfo(f"[Motion Planning] ✅ {final_info} (simulation was paused during computation)")
-            
+            # 直接获取下一帧的 action（无需暂停仿真）
+            action = next(self._primitive_controller)
             return action
-            
         except Exception as e:
-            # 停止进度提示
-            progress_info['active'] = False
-            elapsed = time.time() - start_time
-            rospy.logwarn(f"[Motion Planning] ❌ Failed after {elapsed:.2f}s: {e}")
+            rospy.logwarn(f"[Primitive] Action generation failed: {e}")
             raise
     
     def get_action(self, idle_action):

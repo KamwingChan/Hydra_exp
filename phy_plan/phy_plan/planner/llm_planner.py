@@ -150,6 +150,10 @@ class LLMPlanner:
         Returns:
             (TaskSequence 或 ClarificationRequest 或 InfeasiblePlan, raw_response_dict) 元组
         """
+        # Guard: plan() is stateless — clear any lingering conversation history
+        # to prevent accidental chat() continuation after a plan() call.
+        self.agent.reset()
+        
         # 1. generate prompt (compact format to save tokens)
         # Physical validation is done in backend by PhysicsAwareAgent
         # Detailed info is retrieved via candidate enrichment when needed
@@ -186,7 +190,45 @@ class LLMPlanner:
                 suggestions=[]
             ), response_dict
         
-        # 5. check if clarification needed
+        # 5. handle info_request (Front-loaded RAG)
+        if response_dict.get("info_request", False):
+            requested_objects = response_dict.get("requested_objects", [])
+            request_type = response_dict.get("request_type", "position")
+            
+            if debug:
+                print(f"\n[LLMPlanner] Info request received for: {requested_objects}")
+                print(f"[LLMPlanner] Request type: {request_type}")
+            
+            # Build info string for requested objects
+            object_info = self._build_object_info(requested_objects, request_type, scene_graph)
+            
+            if debug:
+                print(f"[LLMPlanner] Providing info:\n{object_info}")
+            
+            # Build continuation prompt with all context
+            continuation_prompt = (
+                f"{user_prompt}\n\n"
+                f"{object_info}\n\n"
+                f"Based on the information above, please continue with your planning."
+            )
+            
+            # Make second LLM call with full context
+            print(f"[LLMPlanner] Continuing with info, calling {self.agent.model}...")
+            response_text = self.agent.llm_call(system_content, continuation_prompt)
+            
+            if debug:
+                print("\n" + "="*40 + " DEBUG: RESPONSE (after info) " + "="*40)
+                print(response_text)
+                print("="*97 + "\n")
+            
+            # Parse new response
+            response_dict = self.parse_response(response_text)
+            
+            # Mark that info was provided (for downstream handling)
+            response_dict["info_provided"] = True
+            response_dict["provided_objects"] = requested_objects
+        
+        # 6. check if clarification needed
         if response_dict.get("clarification_needed", False):
             candidates = response_dict.get("candidates", [])
             
@@ -215,10 +257,10 @@ class LLMPlanner:
             )
             return clarification, response_dict
         
-        # 6. convert to TaskSequence (with detailed information retrieval)
+        # 7. convert to TaskSequence (with detailed information retrieval)
         task_seq = self.convert_to_task_sequence(response_dict, scene_graph, instruction)
         
-        # 7. Physics validation (if enabled)
+        # 8. Physics validation (if enabled)
         if validate_physics and self._enable_physics and self._physics_agent:
             result = self._validate_and_replan(task_seq, scene_graph, instruction, debug)
             if result is not None:
@@ -433,6 +475,59 @@ class LLMPlanner:
         augmented_instruction = f"{instruction}\n\n[SPATIAL RESOLUTION] Based on spatial analysis, use object {obj_desc}."
         
         return self.plan(scene_graph, augmented_instruction, include_example, debug, validate_physics=True)
+    
+    def _build_object_info(
+        self,
+        object_ids: List[str],
+        request_type: str,
+        scene_graph: SceneGraph
+    ) -> str:
+        """
+        Build detailed info string for requested objects (Info Request RAG)
+        
+        Args:
+            object_ids: List of object IDs to retrieve info for
+            request_type: "position", "physics", or "both"
+            scene_graph: Scene graph for retrieving object data
+            
+        Returns:
+            Formatted string with object details
+        """
+        info_lines = ["[System Info: Requested Object Details]"]
+        
+        for obj_id in object_ids:
+            obj = scene_graph.get_object(obj_id)
+            if not obj:
+                info_lines.append(f"- {obj_id}: not found in scene graph")
+                continue
+            
+            line = f"- {obj.category} ({obj_id})"
+            
+            # Position info
+            if request_type in ["position", "both"] and obj.position:
+                line += f" Position: [{obj.position[0]:.2f}, {obj.position[1]:.2f}, {obj.position[2]:.2f}]"
+            
+            # Physics info
+            if request_type in ["physics", "both"] and obj.physical_properties:
+                props = obj.physical_properties
+                line += f" Weight: {props.weight_level}, Pushable: {props.pushable}"
+            
+            # Room info
+            if obj.room_id:
+                line += f" Room: {obj.room_id}"
+            
+            info_lines.append(line)
+        
+        # Add room centroid info for spatial reasoning
+        if request_type in ["position", "both"]:
+            for room in scene_graph.all_rooms():
+                if room.centroid:
+                    info_lines.append(
+                        f"- Room {room.category} ({room.room_id}) centroid: "
+                        f"[{room.centroid[0]:.2f}, {room.centroid[1]:.2f}, {room.centroid[2]:.2f}]"
+                    )
+        
+        return "\n".join(info_lines)
     
     def enrich_candidates(self, candidates: List[Dict[str, Any]], scene_graph: SceneGraph) -> None:
         """
@@ -810,7 +905,7 @@ class LLMPlanner:
         
         replan_prompt = f"""{context_message}
 
-Updated Scene Graph:
+Updated Scene Graph (supersedes the scene graph in the system prompt):
 {compact_json}
 
 Please generate a new plan considering the above context and updated scene."""

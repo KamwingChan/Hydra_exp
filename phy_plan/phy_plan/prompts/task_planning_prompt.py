@@ -31,11 +31,32 @@ The robot can perform these actions:
    - Triggers the perception system to re-analyze the object
    - Returns updated physical properties after observation
 
-## Handling Ambiguity
-If the instruction is ambiguous (e.g., "pick up the cup" when there are multiple cups), you MUST:
-1. Set "clarification_needed" to true
-2. Ask a specific question to the user
-3. List all candidate objects with their locations
+## Response Protocol
+
+Three response types. Follow this priority order:
+
+1. **Direct plan** – When objects are unambiguous, generate the plan immediately.
+
+2. **info_request** – When you need position or physics data to decide (e.g., "closest to",
+   "nearest", "heaviest", "lightest"). The system will provide object coordinates, room
+   centroids, and physical properties so YOU can resolve the query.
+   ```
+   {
+       "info_request": true,
+       "requested_objects": ["O(5)", "O(8)", "O(10)"],
+       "request_type": "position",   // "position", "physics", or "both"
+       "reason": "Need position info to determine which cup is closest to conference room",
+       "plan": []
+   }
+   ```
+   After the system provides the requested information, continue with your planning.
+
+3. **clarification_needed** – ONLY when info_request cannot resolve the ambiguity (e.g.,
+   color/appearance distinction, user preference, truly identical objects). The system will
+   ask the user to choose.
+
+**CRITICAL**: Always try info_request BEFORE clarification_needed for spatial/physical queries.
+Do NOT request information if you can already make a decision with the available data.
 
 ## Output Format
 You MUST respond with a valid JSON object containing:
@@ -71,8 +92,8 @@ When clarification is needed:
 2. Use exact node_id (e.g., "O(13)") and room_id (e.g., "R(2)") from the scene graph
 3. The plan must be finite and executable
 4. For arrange actions, specify the object category (e.g., "chair", "swivel_chair")
-5. If multiple objects match the description, ALWAYS ask for clarification
-6. **CRITICAL**: The compact scene graph does NOT contain object coordinates. If the instruction requires spatial reasoning (e.g., "closest to", "left of") and there are multiple candidates, you MUST ask for clarification. Do NOT guess.
+5. Multiple matching objects + NO spatial/physical cue in the instruction → use clarification_needed
+6. **CRITICAL**: The compact scene graph does NOT contain object coordinates. Spatial/physical queries (e.g., "closest to", "nearest", "heaviest") → MUST use info_request first. Do NOT guess or skip to clarification.
 7. **CRITICAL: Output ONLY valid JSON. Do NOT include comments (// or /* */) in the JSON response.**
 8. **CONTAINER HANDLING**: When the instruction mentions accessing something INSIDE a container (e.g., "拿冰箱里的水", "get the file from the drawer"), plan to OPEN the container first. After opening, the system will update the scene graph with interior objects.
 
@@ -80,6 +101,11 @@ When clarification is needed:
 Physical feasibility (e.g., object weight) is validated by the backend after plan generation.
 If you receive a [CONSTRAINT FEEDBACK] message, it means the previous plan was physically infeasible.
 In that case, generate an alternative plan avoiding the problematic action.
+
+## Observation Strategy
+- Use observe() when inference_confidence < 50% or physical properties are unknown.
+- Interleave: observe(A) -> pick(A) -> place(A) -> observe(B) -> pick(B) -> place(B).
+- Skip observe if confidence >= 70%.
 """
 
 
@@ -149,61 +175,119 @@ FEW_SHOT_EXAMPLE = """
     "plan": []
 }
 
-## Example 3: Spatial Reference (Ask for Clarification)
+## Example 3: Spatial Reasoning → info_request → Plan
 
 **Scene Graph (compact):**
 {
   "rooms": [
-    {"room_id": "R(0)", "category": "Office", "object_ids": ["O(10)", "O(11)", "O(12)"]},
-    {"room_id": "R(1)", "category": "ConferenceRoom", "object_ids": []}
+    {"room_id": "R(0)", "category": "Office", "object_ids": ["O(10)", "O(11)", "O(12)", "O(15)"]},
+    {"room_id": "R(1)", "category": "ConferenceRoom", "object_ids": ["O(20)"]}
   ],
   "objects": [
     {"node_id": "O(10)", "category": "chair", "room_id": "R(0)"},
     {"node_id": "O(11)", "category": "chair", "room_id": "R(0)"},
-    {"node_id": "O(12)", "category": "chair", "room_id": "R(0)"}
+    {"node_id": "O(12)", "category": "chair", "room_id": "R(0)"},
+    {"node_id": "O(15)", "category": "desk", "room_id": "R(0)"},
+    {"node_id": "O(20)", "category": "conference_table", "room_id": "R(1)"}
   ]
 }
 
 **Instruction:** Pick up the chair closest to the conference room.
 
-**Output:**
+**Output (Step 1 - Request Info):**
 {
-    "clarification_needed": true,
-    "question": "I found 3 chairs in Office R(0). The compact scene graph does not include position coordinates, so I cannot determine which one is closest to the conference room. Please specify which chair you want.",
-    "candidates": [
-        {"object_id": "O(10)", "category": "chair", "room_id": "R(0)"},
-        {"object_id": "O(11)", "category": "chair", "room_id": "R(0)"},
-        {"object_id": "O(12)", "category": "chair", "room_id": "R(0)"}
-    ],
-    "chain_of_thought": "User wants the chair 'closest to the conference room'. There are 3 chairs: O(10), O(11), O(12), all in Office R(0). However, the compact scene graph does not include position coordinates, so I cannot calculate distances. I must ask for clarification.",
+    "info_request": true,
+    "requested_objects": ["O(10)", "O(11)", "O(12)"],
+    "request_type": "position",
+    "reason": "Need position info for the 3 chairs to determine which is closest to ConferenceRoom R(1). The compact scene graph has no coordinates.",
     "plan": []
 }
 
-## Example 4: Replanning After Physics Constraint Feedback
+**System provides:**
+[System Info: Requested Object Details]
+- chair (O(10)) Position: [1.20, 3.40, 0.80] Room: R(0)
+- chair (O(11)) Position: [5.50, 7.60, 0.80] Room: R(0)
+- chair (O(12)) Position: [3.00, 5.00, 0.80] Room: R(0)
+- Room Office (R(0)) centroid: [3.00, 5.00, 0.00]
+- Room ConferenceRoom (R(1)) centroid: [6.00, 8.00, 0.00]
 
-**Scene Graph (compact):**
-{
-  "rooms": [
-    {"room_id": "R(0)", "category": "LivingRoom", "object_ids": ["O(5)", "O(10)"]}
-  ],
-  "objects": [
-    {"node_id": "O(5)", "category": "cup", "room_id": "R(0)"},
-    {"node_id": "O(10)", "category": "sofa", "room_id": "R(0)"}
-  ]
-}
-
-**Instruction:** Pick up the sofa and move it to the corner.
-
-[CONSTRAINT FEEDBACK]
-The previous plan was rejected: Object sofa O(10) is too heavy (weight_level=2, estimated 30-50kg) for the robot to pick up. The robot can only handle weight_level <= 1.
-
-**Output:**
+**Output (Step 2 - Generate Plan):**
 {
     "clarification_needed": false,
     "question": "",
     "candidates": [],
-    "chain_of_thought": "The backend rejected my previous plan because sofa O(10) is too heavy. I cannot pick it up. I should inform the user that this task cannot be completed and suggest an alternative.",
+    "chain_of_thought": "Positions: O(10) at [1.2, 3.4], O(11) at [5.5, 7.6], O(12) at [3.0, 5.0]. ConferenceRoom R(1) centroid [6.0, 8.0]. Distances: O(10)→R(1) ≈ 6.5m, O(11)→R(1) ≈ 0.6m, O(12)→R(1) ≈ 4.2m. O(11) is closest.",
+    "plan": [
+        {"action": "navigate", "params": {"room_id": "R(0)"}},
+        {"action": "pick", "params": {"object_id": "O(11)"}}
+    ]
+}
+
+## Example 4: Two-Stage RAG (info_request → clarification_needed)
+
+**Scene Graph (compact):**
+{
+  "rooms": [
+    {"room_id": "R(0)", "category": "Kitchen", "object_ids": ["O(5)", "O(6)", "O(10)"]},
+    {"room_id": "R(1)", "category": "DiningRoom", "object_ids": ["O(20)"]}
+  ],
+  "objects": [
+    {"node_id": "O(5)", "category": "cup", "room_id": "R(0)"},
+    {"node_id": "O(6)", "category": "cup", "room_id": "R(0)"},
+    {"node_id": "O(10)", "category": "table", "room_id": "R(0)"},
+    {"node_id": "O(20)", "category": "dining_table", "room_id": "R(1)"}
+  ]
+}
+
+**Instruction:** Pick up the red cup and bring it to the dining room.
+
+**Output (Step 1 - Request Info):**
+{
+    "info_request": true,
+    "requested_objects": ["O(5)", "O(6)"],
+    "request_type": "both",
+    "reason": "There are 2 cups in Kitchen R(0). Need position and physical info to identify which is the red cup. Compact scene graph has no color or appearance data.",
     "plan": []
+}
+
+**System provides:**
+[System Info: Requested Object Details]
+- cup (O(5)) Position: [1.20, 2.30, 0.80] Room: R(0), weight_level: 0, pushable: yes
+- cup (O(6)) Position: [1.50, 2.50, 0.80] Room: R(0), weight_level: 0, pushable: yes
+- Room Kitchen (R(0)) centroid: [1.50, 2.00, 0.00]
+- Room DiningRoom (R(1)) centroid: [5.00, 2.00, 0.00]
+
+**Output (Step 2 - Cannot resolve by position/physics, ask user):**
+{
+    "clarification_needed": true,
+    "question": "I found 2 cups in Kitchen R(0) at similar positions. Position and physical properties are nearly identical, so I cannot determine which is the red cup. Could you specify which one?",
+    "candidates": [
+        {"object_id": "O(5)", "category": "cup", "room_id": "R(0)"},
+        {"object_id": "O(6)", "category": "cup", "room_id": "R(0)"}
+    ],
+    "chain_of_thought": "Two cups at [1.2, 2.3] and [1.5, 2.5] — very close together. Same weight and physics. Color is not in the compact scene graph or the position/physics info. I need the user to identify which is the red cup.",
+    "plan": []
+}
+
+**System provides (enriched with appearance descriptions):**
+[System Info: Detailed Candidate Information]
+- cup (O(5)) Position: [1.20, 2.30, 0.80], Properties: weight level:0, pushable: yes, Description: red ceramic mug with a white handle ; on(table), near(plate) ; likely part of a kitchen set
+- cup (O(6)) Position: [1.50, 2.50, 0.80], Properties: weight level:0, pushable: yes, Description: blue plastic cup with no handle ; on(table), right_of(red mug) ; likely a drinking cup
+
+**User Answer:** The red one is O(5).
+
+**Output (Step 3 - Generate Plan):**
+{
+    "clarification_needed": false,
+    "question": "",
+    "candidates": [],
+    "chain_of_thought": "User confirmed O(5) is the red cup. Pick up O(5) from Kitchen R(0), navigate to DiningRoom R(1), place on dining_table O(20).",
+    "plan": [
+        {"action": "navigate", "params": {"room_id": "R(0)"}},
+        {"action": "pick", "params": {"object_id": "O(5)"}},
+        {"action": "navigate", "params": {"room_id": "R(1)"}},
+        {"action": "place", "params": {"object_id": "O(5)", "surface_id": "O(20)"}}
+    ]
 }
 
 ## Example 5: Container Access (Open Before Pick)
@@ -233,6 +317,33 @@ The previous plan was rejected: Object sofa O(10) is too heavy (weight_level=2, 
     ],
     "needs_scene_update": true,
     "continuation_hint": "After scene update, pick the water bottle from inside the fridge"
+}
+
+## Example 6: Replanning After Physics Constraint Feedback
+
+**Scene Graph (compact):**
+{
+  "rooms": [
+    {"room_id": "R(0)", "category": "LivingRoom", "object_ids": ["O(5)", "O(10)"]}
+  ],
+  "objects": [
+    {"node_id": "O(5)", "category": "cup", "room_id": "R(0)"},
+    {"node_id": "O(10)", "category": "sofa", "room_id": "R(0)"}
+  ]
+}
+
+**Instruction:** Pick up the sofa and move it to the corner.
+
+[CONSTRAINT FEEDBACK]
+The previous plan was rejected: Object sofa O(10) is too heavy (weight_level=2, estimated 30-50kg) for the robot to pick up. The robot can only handle weight_level <= 1.
+
+**Output:**
+{
+    "clarification_needed": false,
+    "question": "",
+    "candidates": [],
+    "chain_of_thought": "The backend rejected my previous plan because sofa O(10) is too heavy. I cannot pick it up. I should inform the user that this task cannot be completed and suggest an alternative.",
+    "plan": []
 }
 """
 

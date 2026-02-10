@@ -11,7 +11,7 @@ from .primitive_controller import PrimitiveController
 class RobotController:
     """Manages robot control modes: idle, teleop, primitive."""
     
-    def __init__(self, robot, env, curobo_batch_size=1):
+    def __init__(self, robot, env, curobo_batch_size=1, execution_mode=None):
         """
         Initialize robot controller.
         
@@ -19,6 +19,7 @@ class RobotController:
             robot: Robot instance
             env: OmniGibson environment
             curobo_batch_size: Batch size for CuRobo (default 1 for 8GB GPU)
+            execution_mode: ExecutionMode.FULL or ExecutionMode.SYMBOLIC (default: FULL)
         """
         self.robot = robot
         self.env = env
@@ -26,7 +27,7 @@ class RobotController:
         
         # Initialize sub-controllers
         self.teleop_controller = TeleopController(robot)
-        self.primitive_controller = PrimitiveController(env, robot, curobo_batch_size)
+        self.primitive_controller = PrimitiveController(env, robot, curobo_batch_size, execution_mode)
         
         # Idle action cache
         self._idle_action = None

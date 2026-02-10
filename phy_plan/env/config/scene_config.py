@@ -28,11 +28,40 @@ def choose_scene(scene_name, scene_file, semantic_segmentation=True):
         },
         "robots": [
             {
-                "type": "R1Pro",
-                "name": "robot_r1",  # R1Pro 的默认名字
+                "type": "Stretch",
+                "name": "robot_stretch",  # Stretch 机器人名称
                 "obs_modalities": ["rgb", "depth", "seg_semantic"] if semantic_segmentation else ["rgb", "depth"],
                 "action_type": "continuous",
                 "action_normalize": True,
+                # High friction on drive wheels to prevent slipping during velocity control navigation
+                "link_physics_materials": {
+                    "link_right_wheel": {
+                        "static_friction": 10.0,
+                        "dynamic_friction": 10.0,
+                        "restitution": 0.0,
+                    },
+                    "link_left_wheel": {
+                        "static_friction": 10.0,
+                        "dynamic_friction": 10.0,
+                        "restitution": 0.0,
+                    },
+                },
+                # Controller config for SYMBOLIC mode with velocity control for smooth navigation
+                # Stretch uses DifferentialDriveController (default), so we don't override base
+                "controller_config": {
+                    "arm_0": {
+                        "name": "JointController",
+                        "use_delta_commands": False,
+                    },
+                    "gripper_0": {
+                        "name": "JointController",
+                        "use_delta_commands": False,
+                    },
+                    "camera": {
+                        "name": "JointController",
+                        "use_delta_commands": False,
+                    },
+                },
                 # camera config
                 "sensor_config": {
                     "VisionSensor": {
@@ -42,8 +71,8 @@ def choose_scene(scene_name, scene_file, semantic_segmentation=True):
                         }
                     }
                 },
-                "include_sensor_names": ["zed_link"],  # R1Pro 的头相机关键字
-                "exclude_sensor_names": ["realsense"],
+                "include_sensor_names": ["eyes"],  # Stretch 的头部相机
+                "exclude_sensor_names": [],
             }
         ],
     }

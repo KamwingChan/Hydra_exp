@@ -292,6 +292,16 @@ class BehaviorExecutor:
                     success, message, error_type = self._close_with_feedback(action)
                 elif action.action_type == ActionType.OBSERVE:
                     success, message, error_type = self._observe_with_feedback(action)
+                elif action.action_type == ActionType.ARRANGE:
+                    # ARRANGE should be expanded into sub-actions before reaching executor
+                    success = False
+                    message = (
+                        f"ARRANGE action not expanded: {action.description}. "
+                        "ARRANGE must be expanded into NAVIGATE/PICK/PLACE sub-actions "
+                        "before execution. This indicates a pipeline bug."
+                    )
+                    error_type = ExecutionErrorType.UNKNOWN
+                    logger.error(message)
                 else:
                     # For other actions, just mark as success for now (mock execution)
                     success = True
@@ -346,13 +356,31 @@ class BehaviorExecutor:
     
     def _navigate_with_feedback(self, action: Action) -> Tuple[bool, str, ExecutionErrorType]:
         """Navigate with detailed error feedback."""
+        target_pos = action.target_position
         target_id = action.params.get("room_id") or action.target_object
         
-        if not target_id:
+        if not target_id and not target_pos:
             return False, "No navigation target specified", ExecutionErrorType.NAVIGATION_FAILED
         
         if self.use_real_api and self.api:
-            target_obj = self._find_object(target_id)
+            # Case 1: Navigate to position (room navigation or explicit position)
+            if target_pos:
+                try:
+                    success, message, metadata = self.api.navigate_to_position(
+                        target_pos.x,
+                        target_pos.y,
+                        0.0  # Default yaw
+                    )
+                    if success:
+                        return True, message, ExecutionErrorType.SUCCESS
+                    else:
+                        return False, message, ExecutionErrorType.NAVIGATION_FAILED
+                except Exception as e:
+                    return False, str(e), ExecutionErrorType.NAVIGATION_FAILED
+            
+            # Case 2: Navigate to object (fallback)
+            else:
+                target_obj = self._find_object(target_id)
             if not target_obj:
                 return False, f"Target {target_id} not found in scene", ExecutionErrorType.OBJECT_NOT_FOUND
             
@@ -366,7 +394,7 @@ class BehaviorExecutor:
                 return False, str(e), ExecutionErrorType.NAVIGATION_FAILED
         
         # Mock execution
-        pos = action.target_position.to_list() if action.target_position else "unknown"
+        pos = target_pos.to_list() if target_pos else "unknown"
         return True, f"[Mock] Navigated to {target_id} at {pos}", ExecutionErrorType.SUCCESS
     
     def _pick_with_feedback(self, action: Action) -> Tuple[bool, str, ExecutionErrorType]:
@@ -489,12 +517,12 @@ class BehaviorExecutor:
                 return False, f"Container/door {obj_id} not found in scene", ExecutionErrorType.OBJECT_NOT_FOUND
             
             try:
-                # BEHAVIOR uses 'open' primitive for articulated objects
-                success = self.action_primitives.open(obj) if hasattr(self.action_primitives, 'open') else False
+                # BEHAVIOR uses 'open_object' method from API
+                success, message, metadata = self.api.open_object(obj)
                 if success:
                     return True, f"Opened {obj_id}, perception system will update scene graph", ExecutionErrorType.SUCCESS
                 else:
-                    return False, f"Failed to open {obj_id}", ExecutionErrorType.UNKNOWN
+                    return False, message, ExecutionErrorType.UNKNOWN
             except Exception as e:
                 return False, f"Error opening {obj_id}: {str(e)}", ExecutionErrorType.UNKNOWN
         
@@ -515,12 +543,12 @@ class BehaviorExecutor:
                 return False, f"Container/door {obj_id} not found in scene", ExecutionErrorType.OBJECT_NOT_FOUND
             
             try:
-                # BEHAVIOR uses 'close' primitive for articulated objects
-                success = self.action_primitives.close(obj) if hasattr(self.action_primitives, 'close') else False
+                # BEHAVIOR uses 'close_object' method from API
+                success, message, metadata = self.api.close_object(obj)
                 if success:
                     return True, f"Closed {obj_id}", ExecutionErrorType.SUCCESS
                 else:
-                    return False, f"Failed to close {obj_id}", ExecutionErrorType.UNKNOWN
+                    return False, message, ExecutionErrorType.UNKNOWN
             except Exception as e:
                 return False, f"Error closing {obj_id}: {str(e)}", ExecutionErrorType.UNKNOWN
         

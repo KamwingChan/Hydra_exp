@@ -95,6 +95,65 @@ class SpatialResolver:
         ]
     }
     
+    # Room corner/region patterns (for target locations)
+    CORNER_PATTERNS = {
+        "corner": [
+            r"(?:the\s+)?corner(?:\s+of)?",
+            r"角落",
+            r"墙角",
+        ],
+        "front_left": [
+            r"front[\s-]?left\s+corner",
+            r"左前角",
+            r"前左角",
+        ],
+        "front_right": [
+            r"front[\s-]?right\s+corner",
+            r"右前角",
+            r"前右角",
+        ],
+        "back_left": [
+            r"back[\s-]?left\s+corner",
+            r"rear[\s-]?left\s+corner",
+            r"左后角",
+            r"后左角",
+        ],
+        "back_right": [
+            r"back[\s-]?right\s+corner",
+            r"rear[\s-]?right\s+corner",
+            r"右后角",
+            r"后右角",
+        ],
+        "center": [
+            r"(?:the\s+)?center(?:\s+of)?",
+            r"(?:the\s+)?middle(?:\s+of)?",
+            r"中间",
+            r"中心",
+            r"中央",
+        ],
+        "front": [
+            r"(?:the\s+)?front(?:\s+of)?",
+            r"前面",
+            r"前方",
+        ],
+        "back": [
+            r"(?:the\s+)?back(?:\s+of)?",
+            r"(?:the\s+)?rear(?:\s+of)?",
+            r"后面",
+            r"后方",
+        ],
+        "left": [
+            r"(?:the\s+)?left\s+side",
+            r"左边",
+            r"左侧",
+        ],
+        "right": [
+            r"(?:the\s+)?right\s+side",
+            r"右边",
+            r"右侧",
+        ],
+    }
+    
     def __init__(self):
         """Initialize spatial resolver"""
         pass
@@ -391,3 +450,227 @@ class SpatialResolver:
                 nearest = obj
         
         return nearest
+    
+    def parse_corner_reference(self, instruction: str) -> Optional[Tuple[str, str]]:
+        """
+        Parse room corner/region reference from instruction
+        
+        Args:
+            instruction: User instruction (e.g., "move to the corner of the office")
+            
+        Returns:
+            Tuple of (corner_type, room_reference) or None if not found
+        """
+        instruction_lower = instruction.lower()
+        
+        # First find corner type
+        corner_type = None
+        for ctype, patterns in self.CORNER_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, instruction_lower):
+                    corner_type = ctype
+                    break
+            if corner_type:
+                break
+        
+        if not corner_type:
+            return None
+        
+        # Then find room reference
+        # Common patterns: "corner of the kitchen", "客厅的角落"
+        room_patterns = [
+            r"corner\s+of\s+(?:the\s+)?(.+?)(?:\s|$)",
+            r"center\s+of\s+(?:the\s+)?(.+?)(?:\s|$)",
+            r"middle\s+of\s+(?:the\s+)?(.+?)(?:\s|$)",
+            r"(.+?)的?(?:角落|中间|中心|中央)",
+            r"到(.+?)(?:的)?(?:角落|中间|中心|前面|后面|左边|右边)",
+        ]
+        
+        room_ref = None
+        for pattern in room_patterns:
+            match = re.search(pattern, instruction_lower)
+            if match:
+                room_ref = match.group(1).strip()
+                break
+        
+        if not room_ref:
+            # If no explicit room, default corner type still useful
+            return (corner_type, "")
+        
+        return (corner_type, room_ref)
+    
+    def resolve_corner_position(
+        self,
+        instruction: str,
+        scene_graph: SceneGraph,
+        default_room_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Resolve corner/region reference to actual position
+        
+        Args:
+            instruction: User instruction containing corner reference
+            scene_graph: Scene graph with room bounding boxes
+            default_room_id: Default room ID if not specified in instruction
+            
+        Returns:
+            Dict with {"position": [x,y,z], "room_id": str, "corner_type": str}
+            or None if cannot resolve
+        """
+        parsed = self.parse_corner_reference(instruction)
+        if not parsed:
+            return None
+        
+        corner_type, room_ref = parsed
+        
+        # Find room
+        room = None
+        if room_ref:
+            # Try to match by category name
+            for r in scene_graph.all_rooms():
+                r_cat_lower = r.category.lower()
+                room_ref_lower = room_ref.lower()
+                if (r_cat_lower in room_ref_lower or 
+                    room_ref_lower in r_cat_lower or
+                    r_cat_lower.replace(" ", "") == room_ref_lower.replace(" ", "")):
+                    room = r
+                    break
+            
+            # Try to match by room ID
+            if not room:
+                room_id_match = re.search(r'r\((\d+)\)', room_ref.lower())
+                if room_id_match:
+                    room = scene_graph.get_room(f"R({room_id_match.group(1)})")
+        
+        # Use default room if not found
+        if not room and default_room_id:
+            room = scene_graph.get_room(default_room_id)
+        
+        if not room:
+            return None
+        
+        # Get corner position
+        position = room.get_corner(corner_type)
+        if not position:
+            return None
+        
+        return {
+            "position": position,
+            "room_id": room.room_id,
+            "corner_type": corner_type
+        }
+    
+    def find_objects_near_corner(
+        self,
+        instruction: str,
+        category: Optional[str],
+        scene_graph: SceneGraph,
+        max_distance: float = 2.0,
+        default_room_id: Optional[str] = None
+    ) -> List[Tuple[ObjectNode, float]]:
+        """
+        Find objects near a corner/region specified in instruction
+        
+        Args:
+            instruction: User instruction with corner reference
+            category: Optional object category filter
+            scene_graph: Scene graph
+            max_distance: Maximum distance from corner (meters)
+            default_room_id: Default room if not specified
+            
+        Returns:
+            List of (ObjectNode, distance) tuples sorted by distance
+        """
+        corner_info = self.resolve_corner_position(
+            instruction, scene_graph, default_room_id
+        )
+        
+        if not corner_info:
+            return []
+        
+        position = corner_info["position"]
+        room_id = corner_info["room_id"]
+        
+        # Get objects in room
+        objects = scene_graph.get_objects_in_room(room_id)
+        
+        # Filter by category if specified
+        if category:
+            cat_lower = category.lower()
+            objects = [obj for obj in objects if obj.category.lower() == cat_lower]
+        
+        # Calculate distances and filter
+        results = []
+        for obj in objects:
+            if not obj.position:
+                continue
+            dist = self._calculate_distance(obj.position, position)
+            if dist <= max_distance:
+                results.append((obj, dist))
+        
+        # Sort by distance
+        results.sort(key=lambda x: x[1])
+        return results
+    
+    def suggest_placement_position(
+        self,
+        instruction: str,
+        scene_graph: SceneGraph,
+        default_room_id: Optional[str] = None,
+        offset_from_wall: float = 0.5
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Suggest a placement position based on spatial reference in instruction.
+        
+        Useful for tasks like "move the sofa to the corner" - returns the
+        target position where the object should be placed.
+        
+        Args:
+            instruction: User instruction
+            scene_graph: Scene graph with room bounding boxes
+            default_room_id: Default room if not specified
+            offset_from_wall: Distance to offset from exact corner (meters)
+            
+        Returns:
+            Dict with {"position": [x,y,z], "room_id": str, "description": str}
+            or None if cannot determine placement
+        """
+        corner_info = self.resolve_corner_position(
+            instruction, scene_graph, default_room_id
+        )
+        
+        if not corner_info:
+            return None
+        
+        position = corner_info["position"]
+        room_id = corner_info["room_id"]
+        corner_type = corner_info["corner_type"]
+        
+        room = scene_graph.get_room(room_id)
+        if not room or not room.bounding_box:
+            return {
+                "position": position,
+                "room_id": room_id,
+                "description": f"{corner_type} of {room.category if room else 'room'}"
+            }
+        
+        # Offset from walls for corners
+        bbox = room.bounding_box
+        adjusted_pos = list(position)
+        
+        # Apply offset based on corner type
+        if "left" in corner_type or corner_type == "left":
+            adjusted_pos[0] += offset_from_wall
+        if "right" in corner_type or corner_type == "right":
+            adjusted_pos[0] -= offset_from_wall
+        if "front" in corner_type or corner_type == "front":
+            adjusted_pos[1] += offset_from_wall
+        if "back" in corner_type or corner_type == "back":
+            adjusted_pos[1] -= offset_from_wall
+        
+        return {
+            "position": adjusted_pos,
+            "room_id": room_id,
+            "description": f"{corner_type} of {room.category}",
+            "original_corner": position
+        }

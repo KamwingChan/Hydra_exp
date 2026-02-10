@@ -8,6 +8,7 @@ Key features:
 - Detailed execution feedback for dynamic replanning
 - Error categorization (object_not_found, grasp_failed, etc.)
 - State tracking (object in hand, execution history)
+- Support for both FULL (CuRobo) and SYMBOLIC (teleport) execution modes
 """
 
 from .behavior_executor import (
@@ -17,19 +18,29 @@ from .behavior_executor import (
 )
 
 try:
-    from .behavior_action_api import BehaviorActionAPI, StarterSemanticActionPrimitiveSet
+    from .behavior_action_api import (
+        BehaviorActionAPI, 
+        ExecutionMode,
+        StarterSemanticActionPrimitiveSet,
+        SymbolicSemanticActionPrimitiveSet
+    )
     
     __all__ = [
         "BehaviorExecutor",
         "ActionFeedback",
         "ExecutionErrorType",
         "BehaviorActionAPI",
+        "ExecutionMode",
         "StarterSemanticActionPrimitiveSet",
+        "SymbolicSemanticActionPrimitiveSet",
     ]
 except ImportError:
     # omnigibson not available - provide minimal exports
+    from .behavior_action_api import ExecutionMode
+    
     __all__ = [
         "BehaviorExecutor",
         "ActionFeedback", 
-        "ExecutionErrorType"
+        "ExecutionErrorType",
+        "ExecutionMode"
     ]

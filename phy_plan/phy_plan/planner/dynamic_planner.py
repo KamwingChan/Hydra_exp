@@ -250,6 +250,8 @@ class DynamicPlannerPipeline:
                 )
             
             result = task_seq
+            # Mark conversation as initialized (pipeline already set it up)
+            self._conversation_initialized = True
             
         elif self._use_conversation:
             # Initialize conversation on first use
@@ -298,6 +300,16 @@ class DynamicPlannerPipeline:
         # 4. Execute with monitoring
         while self._execution_index < len(self._current_plan.actions):
             action = self._current_plan.actions[self._execution_index]
+            
+            # Lazy expansion for ARRANGE actions (uses latest scene graph)
+            if action.action_type == ActionType.ARRANGE and self._pipeline:
+                expanded = self._pipeline.expand_arrange_action(action)
+                if len(expanded) > 1:
+                    if self._debug:
+                        print(f"[DynamicPipeline] Expanded ARRANGE to {len(expanded)} sub-actions")
+                    # Replace ARRANGE with expanded sub-actions in-place
+                    self._current_plan.actions[self._execution_index:self._execution_index+1] = expanded
+                    action = self._current_plan.actions[self._execution_index]
             
             if self._debug:
                 print(f"[DynamicPipeline] Executing action {self._execution_index + 1}/{len(self._current_plan.actions)}: {action.description}")
@@ -494,8 +506,15 @@ class DynamicPlannerPipeline:
             augmented_instruction = f"{instruction}\n\n[EXECUTION FAILURE]\n{failure_context}"
             result, _ = self.planner.plan(new_sg, augmented_instruction, debug=self._debug)
         
-        if isinstance(result, (ClarificationRequest, InfeasiblePlan)):
+        if isinstance(result, InfeasiblePlan):
             return False
+        
+        if isinstance(result, ClarificationRequest):
+            # Try interactive clarification instead of failing immediately
+            resolved = self._handle_replan_clarification(result, instruction, new_sg)
+            if resolved is None:
+                return False
+            result = resolved
         
         # Record event
         event = ReplanEvent(
@@ -524,6 +543,74 @@ class DynamicPlannerPipeline:
             print(f"[DynamicPipeline] Replanned with {len(result.actions)} actions")
         
         return True
+    
+    def _handle_replan_clarification(
+        self,
+        clarification: ClarificationRequest,
+        instruction: str,
+        scene_graph: SceneGraph
+    ) -> Optional[TaskSequence]:
+        """
+        Handle ClarificationRequest during replan by asking user interactively.
+        
+        Tries spatial auto-resolution first, then falls back to user input.
+        
+        Args:
+            clarification: The ClarificationRequest from the LLM
+            instruction: Original task instruction
+            scene_graph: Current (latest) scene graph
+            
+        Returns:
+            TaskSequence if resolved, None if failed/cancelled
+        """
+        candidates = clarification.candidates
+        
+        # Try automatic spatial resolution first
+        if self.planner._enable_spatial and self.planner._spatial_resolver:
+            resolved_id = self.planner._spatial_resolver.resolve(
+                instruction, candidates, scene_graph
+            )
+            if resolved_id:
+                print(f"\n[DynamicPipeline] Auto-resolved spatial reference: {resolved_id}")
+                response_text = self.planner.agent.chat(
+                    f"User selected object: {resolved_id}\nPlease generate the plan."
+                )
+                try:
+                    resp = self.planner.parse_response(response_text)
+                    if not resp.get("clarification_needed") and not resp.get("infeasible_reason"):
+                        return self.planner.convert_to_task_sequence(resp, scene_graph, instruction)
+                except ValueError:
+                    pass
+                return None
+        
+        # Display clarification to user
+        print(f"\n[DynamicPipeline] Clarification needed during replan:")
+        print(f"  {clarification.question}")
+        print("  candidates:")
+        for i, c in enumerate(candidates, 1):
+            cat = c.get("category", "unknown")
+            oid = c.get("object_id", "?")
+            desc = c.get("description", "")
+            print(f"    {i}. {cat} ({oid})")
+            if desc:
+                print(f"       {desc[:100]}")
+        
+        user_answer = input("\nplease answer: ").strip()
+        if not user_answer:
+            return None
+        
+        # Continue conversation with user's answer
+        response_text = self.planner.agent.chat(f"User Answer: {user_answer}")
+        
+        try:
+            resp = self.planner.parse_response(response_text)
+            if resp.get("clarification_needed") or resp.get("infeasible_reason"):
+                print("[DynamicPipeline] Replan clarification still unresolved, giving up")
+                return None
+            return self.planner.convert_to_task_sequence(resp, scene_graph, instruction)
+        except ValueError as e:
+            print(f"[DynamicPipeline] Failed to parse replan response: {e}")
+            return None
     
     def _handle_scene_change_replan(
         self,
@@ -578,9 +665,17 @@ class DynamicPlannerPipeline:
         if on_replan:
             on_replan(event)
         
-        if isinstance(result, (ClarificationRequest, InfeasiblePlan)):
+        if isinstance(result, InfeasiblePlan):
             self._current_plan = None
             return True
+        
+        if isinstance(result, ClarificationRequest):
+            # Try interactive clarification instead of failing immediately
+            resolved = self._handle_replan_clarification(result, instruction, new_sg)
+            if resolved is None:
+                self._current_plan = None
+                return True
+            result = resolved
         
         # Update state
         self._current_plan = result

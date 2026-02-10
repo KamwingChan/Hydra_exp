@@ -51,7 +51,7 @@ gm.DEFAULT_VIEWER_HEIGHT = 480
 class ROSBehavior:
     """Main class for ROS-enabled OmniGibson simulation with robot control."""
     
-    def __init__(self, env, record_rosbag=False, publish_dsg=False, semantic_segmentation=True):
+    def __init__(self, env, record_rosbag=False, publish_dsg=False, semantic_segmentation=True, execution_mode=None):
         """
         Initialize ROSBehavior.
         
@@ -60,6 +60,7 @@ class ROSBehavior:
             record_rosbag: Whether to record rosbag
             publish_dsg: Whether to publish DSG messages
             semantic_segmentation: Whether to enable semantic segmentation
+            execution_mode: ExecutionMode.FULL or ExecutionMode.SYMBOLIC (default: FULL)
         """
         self.env = env
         self.sensor = og.sim.viewer_camera
@@ -81,18 +82,18 @@ class ROSBehavior:
             print("=== Robot sensors (actually loaded) ===")
             for name, sensor in self.robot._sensors.items():
                 print(f"  {name}: {type(sensor).__name__}")
-                if "zed_link" in name:
+                if "eyes" in name:
                     self.eyes_sensor = sensor
                     self.eyes_sensor_name = name
                     print(f"Use robot head sensor: {self.eyes_sensor_name}")
             print(f"Total sensors loaded: {len(self.robot._sensors)}")
         if self.eyes_sensor is None:
-            rospy.logwarn("No head sensor (zed_link) found for robot")
+            rospy.logwarn("No head sensor (eyes) found for robot")
         
         # Initialize modules (composition pattern)
         self.id_mapper = IDMapper()
         self.rosbag_manager = RosbagManager(enabled=record_rosbag)
-        self.robot_controller = RobotController(self.robot, self.env, curobo_batch_size=1)
+        self.robot_controller = RobotController(self.robot, self.env, curobo_batch_size=1, execution_mode=execution_mode)
         self.sensor_publisher = SensorPublisher(
             self.eyes_sensor,
             semantic_segmentation=semantic_segmentation,
@@ -245,12 +246,15 @@ Examples:
   
   # Record rosbag
   python behavior_ros_robot.py --scene office_vendor_machine --rosbag true
+  
+  # Use SYMBOLIC mode (no CuRobo, saves GPU memory)
+  python behavior_ros_robot.py --scene office_vendor_machine --execution_mode symbolic
         """
     )
     parser.add_argument("--scene", type=str, default="office_vendor_machine",
                         help="Scene name (default: office_vendor_machine)")
     parser.add_argument("--scene_file", type=str, 
-                        default="/home/kamwing/catkin_ws/src/phy_plan/env/office_vendor_machine_0.json",
+                        default="/home/kamwing/catkin_ws/src/phy_plan/env/config/scene_configs/office_vendor_machine_0.json",
                         help="Path to scene JSON file")
     parser.add_argument(
         "--rosbag",
@@ -268,15 +272,27 @@ Examples:
                         type=bool,
                         default=False,
                         help="Enable semantic segmentation")
+    parser.add_argument(
+        "--execution_mode",
+        type=str,
+        choices=["full", "symbolic"],
+        default="symbolic",
+        help="Execution mode: 'full' (CuRobo motion planning, GPU intensive) or 'symbolic' (teleport + physics, GPU efficient). Default: full"
+    )
 
     args = parser.parse_args()
+    
+    # 解析执行模式
+    from phy_plan.executor.behavior_action_api import ExecutionMode
+    execution_mode = ExecutionMode.SYMBOLIC if args.execution_mode == "symbolic" else ExecutionMode.FULL
     
     env = og.Environment(choose_scene(args.scene, args.scene_file, args.semantic_segmentation))
     ros_behavior = ROSBehavior(
         env,
         record_rosbag=args.rosbag,
         publish_dsg=args.publish_dsg,
-        semantic_segmentation=args.semantic_segmentation
+        semantic_segmentation=args.semantic_segmentation,
+        execution_mode=execution_mode
     )
     
     def shutdown():

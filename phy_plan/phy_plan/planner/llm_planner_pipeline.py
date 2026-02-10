@@ -81,6 +81,9 @@ class LLMPlannerPipeline:
         
         # Conversation state
         self._conversation_started: bool = False
+        self._info_provided: bool = False  # Track if info was provided via info_request
+        self._provided_objects: List[str] = []  # Track which objects info was provided for
+        self._pending_response: Optional[str] = None  # Buffered LLM response from handlers
         
         # Load static scene graph if file path provided
         if scene_file and not self._use_subscriber:
@@ -271,6 +274,9 @@ class LLMPlannerPipeline:
         
         self.planner.init_conversation(system_content)
         self._conversation_started = False
+        self._info_provided = False  # Reset info state
+        self._provided_objects = []  # Reset provided objects
+        self._pending_response = None  # Reset pending response
         print(f"\n[planning] instruction: {instruction}")
     
     def _restart_conversation(self, instruction: str, debug: bool) -> str:
@@ -302,13 +308,17 @@ class LLMPlannerPipeline:
         current_instruction = initial_instruction
         
         while True:
-            # Get LLM response
-            is_first = not self._conversation_started
-            response_text = self._get_llm_response(
-                current_instruction if not is_first else current_instruction,
-                is_first=is_first,
-                debug=debug
-            )
+            # Use buffered response from handler if available, otherwise call LLM
+            if self._pending_response:
+                response_text = self._pending_response
+                self._pending_response = None
+            else:
+                is_first = not self._conversation_started
+                response_text = self._get_llm_response(
+                    current_instruction,
+                    is_first=is_first,
+                    debug=debug
+                )
             
             # Parse response
             try:
@@ -328,6 +338,13 @@ class LLMPlannerPipeline:
                     return TaskSequence(task_name="Cancelled")
                 current_instruction = new_instruction
                 continue
+            
+            # Handle info_request (Front-loaded RAG)
+            if response_dict.get("info_request", False):
+                result = self._handle_info_request(response_dict, debug)
+                if result == "continue":
+                    continue
+                # If result is None, fall through to normal processing
             
             # Handle clarification request
             if response_dict.get("clarification_needed", False):
@@ -372,6 +389,7 @@ class LLMPlannerPipeline:
             
             if self._get_user_confirmation():
                 print("[executing] starting to execute task sequence...")
+                task_seq = self._expand_arrange_actions(task_seq)
                 return task_seq
             else:
                 new_instruction = self._prompt_new_instruction()
@@ -399,6 +417,52 @@ class LLMPlannerPipeline:
         if new_instruction:
             self._restart_conversation(new_instruction, debug)
         return new_instruction
+    
+    def _handle_info_request(
+        self,
+        response_dict: Dict[str, Any],
+        debug: bool
+    ) -> Optional[str]:
+        """
+        Handle info request from LLM (Front-loaded RAG)
+        
+        Args:
+            response_dict: Parsed LLM response with info_request=true
+            debug: Enable debug output
+            
+        Returns:
+            "continue" to continue the loop, None otherwise
+        """
+        requested_objects = response_dict.get("requested_objects", [])
+        request_type = response_dict.get("request_type", "position")
+        reason = response_dict.get("reason", "")
+        
+        if debug:
+            print(f"\n[Pipeline] LLM requested info for: {requested_objects}")
+            print(f"[Pipeline] Reason: {reason}")
+        
+        # Build object info
+        object_info = self.planner._build_object_info(
+            requested_objects, request_type, self._scene_graph
+        )
+        
+        if debug:
+            print(f"[Pipeline] Providing info:\n{object_info}")
+        
+        # Continue conversation with the info
+        continuation_prompt = (
+            f"{object_info}\n\n"
+            f"Based on the information above, please continue with your planning."
+        )
+        
+        response_text = self._get_llm_response(continuation_prompt, is_first=False, debug=debug)
+        self._pending_response = response_text  # Store for next loop iteration
+        
+        # Mark that info was provided for this conversation
+        self._info_provided = True
+        self._provided_objects = requested_objects
+        
+        return "continue"
     
     def _handle_clarification(
         self, 
@@ -428,9 +492,16 @@ class LLMPlannerPipeline:
             return None
         
         # Build RAG context and continue conversation
-        rag_context = self._build_rag_context(candidates)
-        self.planner.chat(f"{rag_context}\nUser Instruction: {user_answer}")
+        # Check if info was already provided via info_request
+        if self._info_provided:
+            # Simplified prompt - LLM already has the detailed info
+            response_text = self.planner.chat(f"User selected: {user_answer}")
+        else:
+            # Provide full RAG context (candidates + room centroids)
+            rag_context = self._build_rag_context(candidates, current_instruction)
+            response_text = self.planner.chat(f"{rag_context}\nUser Answer: {user_answer}")
         
+        self._pending_response = response_text  # Store for next loop iteration
         return "continue"
     
     def _try_spatial_resolution(
@@ -452,7 +523,8 @@ class LLMPlannerPipeline:
         if resolved_id:
             print(f"\n[Robot] Auto-resolved spatial reference, selected: {resolved_id}")
             prompt = f"User selected object: {resolved_id}\nPlease generate the plan based on this selection."
-            self._get_llm_response(prompt, is_first=False, debug=debug)
+            response_text = self._get_llm_response(prompt, is_first=False, debug=debug)
+            self._pending_response = response_text  # Store for next loop iteration
             return True
         
         return False
@@ -471,8 +543,9 @@ class LLMPlannerPipeline:
         
         print("candidates:")
         
-        # Enrich candidates with detailed information
-        self.planner.enrich_candidates(candidates, self._scene_graph)
+        # Only enrich if not already done (check for position_desc)
+        if candidates and not candidates[0].get("position_desc"):
+            self.planner.enrich_candidates(candidates, self._scene_graph)
         
         # Rank by distance if spatial resolver available
         if self.planner._spatial_resolver:
@@ -492,8 +565,19 @@ class LLMPlannerPipeline:
             if cand.get('description'):
                 print(f"     description: {cand['description']}")
     
-    def _build_rag_context(self, candidates: List[Dict[str, Any]]) -> str:
-        """Build RAG context from candidates for LLM"""
+    def _build_rag_context(
+        self, 
+        candidates: List[Dict[str, Any]],
+        instruction: str = ""
+    ) -> str:
+        """Build RAG context from candidates for LLM
+        
+        Includes candidate details and all room centroids for spatial reasoning.
+        
+        Args:
+            candidates: Enriched candidate objects
+            instruction: Original instruction (for context)
+        """
         rag_context = "\n[System Info: Detailed Candidate Information]\n"
         for cand in candidates:
             id_str = cand.get('object_id') or cand.get('room_id') or "unknown"
@@ -505,6 +589,17 @@ class LLMPlannerPipeline:
             if 'description' in cand:
                 line += f", Description: {cand['description']}"
             rag_context += line + "\n"
+        
+        # Append room centroids for spatial reasoning
+        if self._scene_graph:
+            rag_context += "\n[Room Centroids]\n"
+            for room in self._scene_graph.all_rooms():
+                if room.centroid:
+                    rag_context += (
+                        f"- {room.category} ({room.room_id}) centroid: "
+                        f"[{room.centroid[0]:.2f}, {room.centroid[1]:.2f}, {room.centroid[2]:.2f}]\n"
+                    )
+        
         return rag_context
     
     def _handle_empty_plan(self, debug: bool) -> Optional[str]:
@@ -624,6 +719,36 @@ class LLMPlannerPipeline:
         for action in task_seq.actions:
             if action.action_type == ActionType.ARRANGE:
                 action.params["requires_expansion"] = True
+        
+        return task_seq
+    
+    def _expand_arrange_actions(self, task_seq: TaskSequence) -> TaskSequence:
+        """
+        Expand all ARRANGE actions in the task sequence into concrete sub-actions.
+        
+        Called after user confirms the plan, before returning from _interactive_loop.
+        
+        Args:
+            task_seq: Task sequence potentially containing ARRANGE actions
+            
+        Returns:
+            Task sequence with ARRANGE actions expanded
+        """
+        expanded_actions = []
+        has_expansion = False
+        for action in task_seq.actions:
+            if action.action_type == ActionType.ARRANGE:
+                sub_actions = self.expand_arrange_action(action)
+                if len(sub_actions) > 1:
+                    print(f"  [arrange] Expanded to {len(sub_actions)} sub-actions")
+                    has_expansion = True
+                expanded_actions.extend(sub_actions)
+            else:
+                expanded_actions.append(action)
+        
+        if has_expansion:
+            task_seq.actions = expanded_actions
+            print(f"  [arrange] Total actions after expansion: {len(task_seq.actions)}")
         
         return task_seq
     

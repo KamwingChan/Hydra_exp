@@ -185,6 +185,7 @@ class RoomNode:
     room_id: str                   # e.g. "R(0)"
     category: str                  # room category, e.g. "LivingRoom", "DiningRoom"
     centroid: Optional[List[float]] = None  # room center [x, y, z]
+    bounding_box: Optional[BoundingBox] = None  # room bounding box (from phy_graph)
     object_ids: List[str] = field(default_factory=list)  # list of object IDs
     description: str = ""
     
@@ -196,9 +197,65 @@ class RoomNode:
         }
         if self.centroid:
             result["centroid"] = {"x": self.centroid[0], "y": self.centroid[1], "z": self.centroid[2]}
+        if self.bounding_box:
+            result["bounding_box"] = self.bounding_box.to_dict()
         if self.description:
             result["description"] = self.description
         return result
+    
+    def get_corner(self, corner_type: str) -> Optional[List[float]]:
+        """
+        Get a corner position of the room based on bounding box.
+        
+        Args:
+            corner_type: One of "front_left", "front_right", "back_left", "back_right",
+                         "center", "front", "back", "left", "right"
+                         
+        Returns:
+            [x, y, z] position or None if bounding_box unavailable
+        """
+        if not self.bounding_box:
+            return self.centroid  # fallback to centroid
+        
+        min_pt = self.bounding_box.min_point
+        max_pt = self.bounding_box.max_point
+        center = self.bounding_box.center
+        
+        # Use floor level (z = min_pt[2]) for corner positions
+        z = min_pt[2]
+        
+        corner_map = {
+            "center": center,
+            "front_left": [min_pt[0], min_pt[1], z],
+            "front_right": [max_pt[0], min_pt[1], z],
+            "back_left": [min_pt[0], max_pt[1], z],
+            "back_right": [max_pt[0], max_pt[1], z],
+            "front": [(min_pt[0] + max_pt[0]) / 2, min_pt[1], z],
+            "back": [(min_pt[0] + max_pt[0]) / 2, max_pt[1], z],
+            "left": [min_pt[0], (min_pt[1] + max_pt[1]) / 2, z],
+            "right": [max_pt[0], (min_pt[1] + max_pt[1]) / 2, z],
+        }
+        
+        return corner_map.get(corner_type.lower(), center)
+    
+    def point_in_room(self, point: List[float]) -> bool:
+        """
+        Check if a point is inside the room's bounding box (2D, ignores z).
+        
+        Args:
+            point: [x, y, z] position
+            
+        Returns:
+            True if point is inside the room's 2D bounding box
+        """
+        if not self.bounding_box:
+            return False
+        
+        min_pt = self.bounding_box.min_point
+        max_pt = self.bounding_box.max_point
+        
+        return (min_pt[0] <= point[0] <= max_pt[0] and
+                min_pt[1] <= point[1] <= max_pt[1])
     
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "RoomNode":
@@ -207,10 +264,16 @@ class RoomNode:
             c = d["centroid"]
             centroid = [c.get("x", 0), c.get("y", 0), c.get("z", 0)]
         
+        # Parse bounding_box (same format as ObjectNode)
+        bbox = None
+        if "bounding_box" in d:
+            bbox = BoundingBox.from_dict(d["bounding_box"])
+        
         return cls(
             room_id=d.get("room_id", ""),
             category=d.get("category", "Unknown"),
             centroid=centroid,
+            bounding_box=bbox,
             object_ids=d.get("object_ids", []),
             description=d.get("description", "")
         )
@@ -471,12 +534,77 @@ class SceneGraph:
         
         return nearest
     
+    def get_room_corner(self, room_id: str, corner_type: str) -> Optional[List[float]]:
+        """
+        Get a specific corner/region position of a room.
+        
+        Args:
+            room_id: Room node ID (e.g., "R(0)")
+            corner_type: One of "front_left", "front_right", "back_left", "back_right",
+                         "center", "front", "back", "left", "right"
+                         
+        Returns:
+            [x, y, z] position or None if room not found or no bounding_box
+        """
+        room = self.get_room(room_id)
+        if not room:
+            return None
+        return room.get_corner(corner_type)
+    
+    def get_room_containing_point(self, position: List[float]) -> Optional[RoomNode]:
+        """
+        Find which room contains a given point (using bounding box).
+        
+        Args:
+            position: [x, y, z] position
+            
+        Returns:
+            RoomNode containing the point, or None if not in any room
+        """
+        for room in self.rooms.values():
+            if room.point_in_room(position):
+                return room
+        return None
+    
+    def get_objects_near_corner(
+        self,
+        room_id: str,
+        corner_type: str,
+        max_distance: float = 2.0,
+        category: Optional[str] = None
+    ) -> List[tuple]:
+        """
+        Find objects near a specific corner of a room.
+        
+        Args:
+            room_id: Room node ID
+            corner_type: Type of corner ("front_left", "back_right", etc.)
+            max_distance: Maximum distance from corner in meters
+            category: Optional category filter
+            
+        Returns:
+            List of (ObjectNode, distance) tuples sorted by distance
+        """
+        corner_pos = self.get_room_corner(room_id, corner_type)
+        if not corner_pos:
+            return []
+        
+        results = self.get_objects_sorted_by_distance(
+            reference_point=corner_pos,
+            category=category,
+            room_id=room_id
+        )
+        
+        # Filter by max distance
+        return [(obj, dist) for obj, dist in results if dist <= max_distance]
+    
     # ==================== 转换接口 ====================
     
     def to_compact_json(
         self,
         include_physics: bool = False,
-        include_position: bool = False
+        include_position: bool = False,
+        include_room_bbox: bool = False
     ) -> str:
         """
         Generate compact format JSON (for LLM context)
@@ -487,6 +615,7 @@ class SceneGraph:
         Args:
             include_physics: Include object physical properties (weight_level, pushable)
             include_position: Include object and room positions for spatial reasoning
+            include_room_bbox: Include room bounding boxes (for corner/region reasoning)
             
         Returns:
             Compact JSON string suitable for LLM prompt
@@ -496,7 +625,7 @@ class SceneGraph:
             "objects": []
         }
         
-        # Add rooms with optional centroid
+        # Add rooms with optional centroid and bounding_box
         for room in self.rooms.values():
             room_data = {
                 "room_id": room.room_id,
@@ -508,6 +637,19 @@ class SceneGraph:
                     "x": round(room.centroid[0], 2),
                     "y": round(room.centroid[1], 2),
                     "z": round(room.centroid[2], 2)
+                }
+            if include_room_bbox and room.bounding_box:
+                room_data["bounding_box"] = {
+                    "min": {
+                        "x": round(room.bounding_box.min_point[0], 2),
+                        "y": round(room.bounding_box.min_point[1], 2),
+                        "z": round(room.bounding_box.min_point[2], 2)
+                    },
+                    "max": {
+                        "x": round(room.bounding_box.max_point[0], 2),
+                        "y": round(room.bounding_box.max_point[1], 2),
+                        "z": round(room.bounding_box.max_point[2], 2)
+                    }
                 }
             compact["rooms"].append(room_data)
         

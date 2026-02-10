@@ -29,11 +29,11 @@ class IDMapper:
         if remap_file_path is None:
             # 获取当前文件所在目录的父目录（env/）
             env_dir = Path(__file__).parent.parent
-            remap_file_path = env_dir / "behavior_remap.yaml"
+            remap_file_path = env_dir / "config" / "label_remaps" / "behavior.yaml"
         
         if not Path(remap_file_path).exists():
             rospy.logerr(f"Remap file not found: {remap_file_path}")
-            rospy.logerr("Please copy behavior.yaml to env/behavior_remap.yaml")
+            rospy.logerr("Please copy behavior.yaml to env/config/label_remaps/behavior.yaml")
             # 至少映射 0 -> 0 (unknown)，避免完全崩溃
             self.id_mapping[0] = 0
             return
