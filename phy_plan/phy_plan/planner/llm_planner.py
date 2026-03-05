@@ -209,7 +209,8 @@ class LLMPlanner:
             continuation_prompt = (
                 f"{user_prompt}\n\n"
                 f"{object_info}\n\n"
-                f"Based on the information above, please continue with your planning."
+                f"Based on the information above, continue planning. "
+                f"If multiple candidates still match, use clarification_needed."
             )
             
             # Make second LLM call with full context
@@ -232,17 +233,7 @@ class LLMPlanner:
         if response_dict.get("clarification_needed", False):
             candidates = response_dict.get("candidates", [])
             
-            # try spatial resolution first
             if self._enable_spatial and self._spatial_resolver:
-                resolved_id = self._spatial_resolver.resolve(instruction, candidates, scene_graph)
-                if resolved_id:
-                    print(f"[LLMPlanner] Spatial resolver selected: {resolved_id}")
-                    # replan with resolved object
-                    return self._replan_with_resolved_object(
-                        scene_graph, instruction, resolved_id, include_example, debug
-                    )
-                
-                # enrich candidates with distance info for display
                 candidates = self._spatial_resolver.rank_candidates_for_display(
                     candidates, instruction, scene_graph
                 )
@@ -256,6 +247,38 @@ class LLMPlanner:
                 chain_of_thought=response_dict.get("chain_of_thought", "")
             )
             return clarification, response_dict
+        
+        # 6.5 Backend guard: if LLM skipped info_request but plan uses ambiguous objects
+        if not response_dict.get("info_provided", False):
+            ambiguous_ids = self._check_ambiguous_objects(response_dict, scene_graph)
+            if ambiguous_ids:
+                if debug:
+                    print(f"[LLMPlanner] Backend guard triggered: ambiguous objects {ambiguous_ids}")
+                object_info = self._build_object_info(ambiguous_ids, "position", scene_graph)
+                continuation_prompt = (
+                    f"{user_prompt}\n\n"
+                    f"[SYSTEM GUARD] Your plan uses objects that have multiple candidates "
+                    f"of the same category. You MUST consider all of them:\n"
+                    f"{object_info}\n\n"
+                    f"Please re-evaluate and generate the correct plan."
+                )
+                response_text = self.agent.llm_call(system_content, continuation_prompt)
+                if debug:
+                    print("\n" + "="*40 + " DEBUG: RESPONSE (after guard) " + "="*40)
+                    print(response_text)
+                    print("="*97 + "\n")
+                response_dict = self.parse_response(response_text)
+                response_dict["info_provided"] = True
+                
+                if response_dict.get("clarification_needed", False):
+                    candidates = response_dict.get("candidates", [])
+                    self.enrich_candidates(candidates, scene_graph)
+                    clarification = ClarificationRequest(
+                        question=response_dict.get("question", ""),
+                        candidates=candidates,
+                        chain_of_thought=response_dict.get("chain_of_thought", "")
+                    )
+                    return clarification, response_dict
         
         # 7. convert to TaskSequence (with detailed information retrieval)
         task_seq = self.convert_to_task_sequence(response_dict, scene_graph, instruction)
@@ -467,7 +490,9 @@ class LLMPlanner:
         debug: bool
     ) -> Tuple[Union[TaskSequence, ClarificationRequest, InfeasiblePlan], Dict[str, Any]]:
         """
-        Replan with spatially resolved object
+        DEPRECATED: No longer called. Spatial resolution is now handled entirely
+        via info_request + LLM reasoning instead of bypassing LLM judgment.
+        Kept for backward compatibility.
         """
         obj = scene_graph.get_object(resolved_object_id)
         obj_desc = f"{obj.category} ({resolved_object_id})" if obj else resolved_object_id
@@ -475,6 +500,44 @@ class LLMPlanner:
         augmented_instruction = f"{instruction}\n\n[SPATIAL RESOLUTION] Based on spatial analysis, use object {obj_desc}."
         
         return self.plan(scene_graph, augmented_instruction, include_example, debug, validate_physics=True)
+    
+    def _check_ambiguous_objects(
+        self,
+        response_dict: Dict[str, Any],
+        scene_graph: SceneGraph
+    ) -> List[str]:
+        """
+        Check if plan uses objects that have same-category siblings in the SAME room.
+        Only flags ambiguity when multiple objects of the same category coexist
+        in the same room, which is the case that genuinely requires disambiguation.
+        """
+        plan = response_dict.get("plan", [])
+        if not plan:
+            return []
+        
+        used_ids = set()
+        for step in plan:
+            params = step.get("params", {})
+            for key in ("object_id", "surface_id", "container_id"):
+                val = params.get(key)
+                if val:
+                    used_ids.add(val)
+        
+        ambiguous_all = []
+        checked = set()
+        for obj_id in used_ids:
+            obj = scene_graph.get_object(obj_id)
+            if not obj or (obj.category, obj.room_id) in checked:
+                continue
+            checked.add((obj.category, obj.room_id))
+            same_room_siblings = [
+                s for s in scene_graph.get_objects_by_category(obj.category)
+                if s.room_id == obj.room_id
+            ]
+            if len(same_room_siblings) >= 2:
+                ambiguous_all.extend(s.node_id for s in same_room_siblings)
+        
+        return ambiguous_all
     
     def _build_object_info(
         self,
@@ -515,6 +578,10 @@ class LLMPlanner:
             # Room info
             if obj.room_id:
                 line += f" Room: {obj.room_id}"
+            
+            # Description (appearance, spatial context from visual inference)
+            if obj.physical_properties and obj.physical_properties.description:
+                line += f", Description: {obj.physical_properties.description}"
             
             info_lines.append(line)
         
@@ -709,6 +776,20 @@ class LLMPlanner:
                 target_position=target_pos,
                 params={"room_id": room_id},
                 description=f"Navigate to {room_id}"
+            )
+        
+        elif action_name == "navigate_to":
+            object_id = params.get("object_id", "")
+            obj = scene_graph.get_object(object_id)
+            target_pos = None
+            if obj and obj.position:
+                target_pos = Position.from_list(obj.position)
+            return Action(
+                action_type=ActionType.NAVIGATE,
+                target_object=object_id,
+                target_position=target_pos,
+                params={"object_id": object_id},
+                description=f"Navigate to {object_id}" + (f" ({obj.category})" if obj else "")
             )
         
         elif action_name == "pick":

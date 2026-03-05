@@ -523,6 +523,8 @@ void PhysicalInferenceNode::cameraInfoCallback(const sensor_msgs::CameraInfoCons
     fx_ = msg->K[0]; fy_ = msg->K[4]; cx_ = msg->K[2]; cy_ = msg->K[5];
     camera_frame_ = msg->header.frame_id;
     camera_info_received_ = true;
+    ROS_INFO("Camera info received: frame_id=%s, fx=%.2f, fy=%.2f, cx=%.2f, cy=%.2f",
+             camera_frame_.c_str(), fx_, fy_, cx_, cy_);
     camera_info_sub_.shutdown();
 }
 
@@ -532,7 +534,10 @@ void PhysicalInferenceNode::depthCallback(const sensor_msgs::ImageConstPtr& msg)
 }
 
 void PhysicalInferenceNode::rgbCallback(const sensor_msgs::ImageConstPtr& msg) {
-    if (!camera_info_received_) return;
+    if (!camera_info_received_) {
+        ROS_DEBUG_THROTTLE(5.0, "Waiting for camera_info...");
+        return;
+    }
     
     // Use configurable frame skip (default 5 for 15Hz→3Hz)
     const auto& cfg = phy_graph::InferenceConfigManager::get().config();
@@ -540,8 +545,20 @@ void PhysicalInferenceNode::rgbCallback(const sensor_msgs::ImageConstPtr& msg) {
     if (++frame_counter % cfg.keyframe.frame_skip != 0) return;
     
     try {
-        geometry_msgs::TransformStamped transform = tf_buffer_->lookupTransform(
-            "world", camera_frame_, msg->header.stamp, ros::Duration(0.5));
+        // Try to lookup transform with image timestamp first
+        // In rosbag playback, use longer timeout and try latest if timestamp fails
+        geometry_msgs::TransformStamped transform;
+        try {
+            transform = tf_buffer_->lookupTransform(
+                "world", camera_frame_, msg->header.stamp, ros::Duration(1.0));
+        } catch (tf2::ExtrapolationException& e) {
+            // If timestamp lookup fails (common in rosbag playback), try latest
+            ROS_DEBUG_THROTTLE(5.0, "TF lookup failed for timestamp %f, trying latest: %s", 
+                              msg->header.stamp.toSec(), e.what());
+            transform = tf_buffer_->lookupTransform(
+                "world", camera_frame_, ros::Time(0));
+        }
+        
         Eigen::Isometry3d world_T_camera = tf2::transformToEigen(transform);
         
         // Get depth image if occlusion detection is enabled
@@ -552,8 +569,19 @@ void PhysicalInferenceNode::rgbCallback(const sensor_msgs::ImageConstPtr& msg) {
         }
         
         // Add to database with optional depth
+        size_t keyframes_before = keyframe_db_->size();
         keyframe_db_->addImage(msg, world_T_camera, depth_msg);
-    } catch (...) {}
+        size_t keyframes_after = keyframe_db_->size();
+        
+        if (keyframes_after > keyframes_before) {
+            ROS_DEBUG_THROTTLE(2.0, "Added keyframe (total: %zu)", keyframes_after);
+        }
+    } catch (tf2::TransformException& e) {
+        ROS_WARN_THROTTLE(5.0, "TF lookup failed: %s (camera_frame: %s)", 
+                         e.what(), camera_frame_.c_str());
+    } catch (std::exception& e) {
+        ROS_WARN_THROTTLE(5.0, "Failed to add keyframe: %s", e.what());
+    }
 }
 
 int main(int argc, char** argv) {

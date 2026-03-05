@@ -86,7 +86,8 @@ class PhysicalInference:
 
         prompt_text = f"""
         Analyze the object in this image. The image is reprojected from a 3D reconstruction pipeline and may contain visual artifacts.
-        The object is labeled as "{label}".
+        If a red bounding box is drawn in the image, the object to analyze is the one inside that box (ignore other objects in the crop).
+        Otherwise, analyze the main object. The object is labeled as "{label}".
 
         Return a JSON object with the following keys and value types:
 
@@ -104,10 +105,15 @@ class PhysicalInference:
 
         - "pushable": Integer, 1 if a standard mobile robot could likely push it, 0 otherwise.
 
-        - "weight_level": Integer from 0 (light) to 2 (heavy).
+        - "weight_level": Integer from 0 (light) to 2 (heavy), defined to distinguish different robot payload capacities:
+          * 0 (light): < 5kg - Manipulable by small embodied robots (e.g., Locobot, Spot Mini) - books, cups, bottles, small items
+          * 1 (medium): 5-20kg - Manipulable by medium-sized robots (e.g., PR2, Fetch, HSR) - chairs, monitors, microwave, small boxes
+          * 2 (heavy): > 20kg - Requires large/industrial robots or beyond typical manipulation - tables, sofas, large appliances, furniture
+          Be realistic and conservative: most mobile manipulation robots have 5-15kg payload capacity.
 
         - "estimated_weight_kg": A string representing a realistic weight range in kilograms 
           (for example: "0.1-0.5", "0.5-2", "5-10", "20-50").
+          This should be consistent with the weight_level classification above.
 
         Important rules:
         - Only include spatial relations that can be reasonably inferred from the image.

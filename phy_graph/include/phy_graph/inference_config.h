@@ -18,6 +18,7 @@ struct InferenceConfig {
         float score_threshold = 60.0f;
         float high_quality_threshold = 70.0f;
         std::string projection_mode = "mesh_vertices";
+        bool draw_bbox_for_vlm = true;  // draw tight bbox on crop so VLM knows which object to infer
     } image;
 
     // === 关键帧数据库参数 ===
@@ -59,8 +60,16 @@ struct InferenceConfig {
         bool enable = true;                  // 是否启用遮挡检测
         double depth_threshold = 0.1;        // 深度比较阈值（米），超过此值认为被遮挡
         int sample_points = 50;              // 遮挡检测采样点数
-        int max_score = 15;                  // 遮挡评分最大分值
+        int max_score = 35;                  // 遮挡评分最大分值
     } occlusion;
+
+    // === 距离评分参数 ===
+    struct Distance {
+        double ideal_min = 1.0;              // 理想距离最小值（米）
+        double ideal_max = 4.0;              // 理想距离最大值（米）
+        double max_distance = 8.0;           // 最大有效距离（米）
+        int max_score = 20;                  // 距离评分最大分值
+    } distance;
 
     // === 调试参数 ===
     struct Debug {

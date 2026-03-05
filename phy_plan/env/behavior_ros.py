@@ -56,8 +56,9 @@ def choose_scene(scene_name, scene_file):
 
 
 class ROSBehavior:
-    def __init__(self, env, record_rosbag=False, publish_dsg=False):
+    def __init__(self, env, record_rosbag=False, publish_dsg=False, scene_name=None):
         self.env = env
+        self.scene_name = scene_name
         self.sensor = og.sim.viewer_camera
         self.camera_mover = None 
         self.bridge = CvBridge()
@@ -108,7 +109,10 @@ class ROSBehavior:
 
     def _setup_camera_mover(self):
         viewer_cam = self.sensor
-        viewer_cam.set_position_orientation(position=[1.35, 4.63, 1.93], orientation=[0.19, 0.62, 0.71, 0.22])
+        if self.scene_name == "office_vendor_machine":
+            viewer_cam.set_position_orientation(position=[1.35, 4.63, 1.93], orientation=[0.19, 0.62, 0.71, 0.22])
+        elif self.scene_name == "Rs_int":
+            viewer_cam.set_position_orientation(position=[0.8253, -2.6221,  1.6581], orientation=[0.6108, 0.1980, 0.2341, 0.7300])
         viewer_cam.add_modality('depth')
         viewer_cam.add_modality('seg_semantic')
         self.camera_mover = CameraMover(viewer_cam)
@@ -200,7 +204,7 @@ class ROSBehavior:
         """
         # 获取当前文件所在目录
         env_dir = Path(__file__).parent
-        local_remap = env_dir / "behavior_remap.yaml"
+        local_remap = env_dir/ "config" / "label_remaps" / "behavior_remap.yaml"
         
         if not local_remap.exists():
             rospy.logerr(f"Remap file not found: {local_remap}")
@@ -477,7 +481,7 @@ Examples:
     parser.add_argument("--scene", type=str, default="office_vendor_machine",
                         help="Scene name (default: office_vendor_machine)")
     parser.add_argument("--scene_file", type=str, 
-                        default="/home/kamwing/catkin_ws/src/phy_plan/env/office_vendor_machine_0.json",
+                        default="/home/kamwing/catkin_ws/src/phy_plan/env/config/scene_configs/office_vendor_machine_0.json",
                         help="Path to scene JSON file")
     parser.add_argument(
         "--rosbag",
@@ -494,7 +498,7 @@ Examples:
     args = parser.parse_args()
     
     env = og.Environment(choose_scene(args.scene, args.scene_file))
-    ros_behavior = ROSBehavior(env, record_rosbag=args.rosbag, publish_dsg=args.publish_dsg)
+    ros_behavior = ROSBehavior(env, record_rosbag=args.rosbag, publish_dsg=args.publish_dsg, scene_name=args.scene)
     
     def shutdown():
         """clean up and exit"""

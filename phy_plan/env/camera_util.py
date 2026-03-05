@@ -306,9 +306,9 @@ class CameraMover:
         """
         return {
             lazy.carb.input.KeyboardInput.O: lambda: self.record_image(fpath=None),
-            lazy.carb.input.KeyboardInput.P: lambda: self.print_cam_pose(),
-            lazy.carb.input.KeyboardInput.KEY_9: lambda: self.change_light(delta=-2e4),
-            lazy.carb.input.KeyboardInput.KEY_0: lambda: self.change_light(delta=2e4),
+            lazy.carb.input.KeyboardInput.KEY_0: lambda: self.print_cam_pose(),
+            # lazy.carb.input.KeyboardInput.KEY_9: lambda: self.change_light(delta=-2e4),
+            # lazy.carb.input.KeyboardInput.KEY_0: lambda: self.change_light(delta=2e4),
             lazy.carb.input.KeyboardInput.SPACE: lambda: self.reset_camera(),
         }
 

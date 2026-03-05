@@ -19,7 +19,7 @@ class LLMAgent:
     
     def __init__(
         self, 
-        model: str = "gpt-4o-mini", 
+        model: str = "gpt-4o", 
         api_key: Optional[str] = None,
         base_url: Optional[str] = None
     ):
@@ -74,30 +74,40 @@ class LLMAgent:
     ) -> str:
         """
         single-round LLM call
-        
-        Args:
-            system_content: System message (define role and constraints)
-            user_prompt: User message (specific task)
-            temperature: temperature parameter (default 0.0 to ensure deterministic output)
-            max_tokens: maximum output token number
-            
-        Returns:
-            LLM response text
-            
-        Raises:
-            RuntimeError: if response is truncated due to length limit
         """
         messages = [
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt}
         ]
         
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
+        import json
+        import httpx._content
+        _original_dumps = httpx._content.json_dumps
+        def _patched_dumps(obj, *args, **kwargs):
+            def clean(o):
+                if isinstance(o, dict):
+                    return {k: clean(v) for k, v in o.items() if getattr(v, '__class__', None) and getattr(v.__class__, '__name__', '') not in ('Omit', 'NotGiven', 'PydanticOmit')}
+                elif isinstance(o, list):
+                    return [clean(v) for v in o if getattr(v, '__class__', None) and getattr(v.__class__, '__name__', '') not in ('Omit', 'NotGiven', 'PydanticOmit')]
+                return o
+            return _original_dumps(clean(obj), *args, **kwargs)
+        
+        httpx._content.json_dumps = _patched_dumps
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[LLMAgent] Exception in llm_call(): {e}")
+            raise
+        finally:
+            httpx._content.json_dumps = _original_dumps
         
         # check if response is truncated due to length limit
         finish_reason = response.choices[0].finish_reason
@@ -129,28 +139,39 @@ class LLMAgent:
     ) -> str:
         """
         multi-round conversation (based on history)
-        
-        Args:
-            user_prompt: User message
-            temperature: temperature parameter
-            max_tokens: maximum output token number
-            
-        Returns:
-            LLM response text
-            
-        Raises:
-            RuntimeError: if response is truncated due to length limit
         """
         # add user message
         self.messages.append({"role": "user", "content": user_prompt})
         
+        import json
+        import httpx._content
+        _original_dumps = httpx._content.json_dumps
+        def _patched_dumps(obj, *args, **kwargs):
+            def clean(o):
+                if isinstance(o, dict):
+                    return {k: clean(v) for k, v in o.items() if getattr(v, '__class__', None) and getattr(v.__class__, '__name__', '') not in ('Omit', 'NotGiven', 'PydanticOmit')}
+                elif isinstance(o, list):
+                    return [clean(v) for v in o if getattr(v, '__class__', None) and getattr(v.__class__, '__name__', '') not in ('Omit', 'NotGiven', 'PydanticOmit')]
+                return o
+            return _original_dumps(clean(obj), *args, **kwargs)
+        
+        httpx._content.json_dumps = _patched_dumps
+        
         # call LLM
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=self.messages,
-            temperature=temperature,
-            max_tokens=max_tokens
-        )
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=self.messages,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            print(f"[LLMAgent] Exception in chat(): {e}")
+            raise
+        finally:
+            httpx._content.json_dumps = _original_dumps
         
         # check if response is truncated due to length limit
         finish_reason = response.choices[0].finish_reason

@@ -255,60 +255,94 @@ PhysicalInferenceNode::projectObjectToImage(
     result.visible_count = points_2d.size();
     result.bbox = cv::boundingRect(points_2d);
     
-    // === Improved Scoring Logic ===
-    // With occlusion detection:
-    //   Visibility 30%, Coverage 35%, Occlusion 15%, Center 8%, Margin 12%
-    // Without occlusion detection (depth unavailable):
-    //   Visibility 35%, Coverage 40%, Center 10%, Margin 15%
+    // === 计算物体距离 ===
+    Eigen::Vector3d object_center = attrs.bounding_box.world_P_center.cast<double>();
+    Eigen::Vector3d camera_pos = world_T_camera.translation();
+    double distance = (object_center - camera_pos).norm();
+    
+    // === New Scoring Logic with Distance ===
+    // With occlusion detection (Total 100 points):
+    //   Visibility: 20 points - how much of the object is visible
+    //   Distance: 20 points - is object at ideal viewing distance
+    //   Occlusion: 35 points - is object occluded by other objects
+    //   Coverage: 15 points - object size in image
+    //   Center: 5 points - object position in frame
+    //   Margin: 5 points - object fully visible in frame
+    //
+    // Without occlusion detection (Total 100 points):
+    //   Visibility: 30 points - how much of the object is visible
+    //   Distance: 30 points - is object at ideal viewing distance
+    //   Coverage: 25 points - object size in image
+    //   Center: 10 points - object position in frame
+    //   Margin: 5 points - object fully visible in frame
     
     bool use_occlusion = cfg.occlusion.enable && !depth_image.empty();
     
-    // 1. Visibility score (30 or 35 points max) - how much of the object is visible
+    // 1. Visibility score - how much of the object is visible
     double visibility = static_cast<double>(points_2d.size()) / total_vertices;
-    double visibility_max = use_occlusion ? 30.0 : 35.0;
+    const double visibility_max = use_occlusion ? 20.0 : 30.0;
     if (visibility > 0.8) result.score += visibility_max;
     else if (visibility > 0.5) result.score += visibility_max * 0.8;
-    else if (visibility > 0.3) result.score += visibility_max * 0.57;
-    else result.score += visibility_max * 0.29;
+    else if (visibility > 0.3) result.score += visibility_max * 0.6;
+    else result.score += visibility_max * 0.3;
     
-    // 2. Coverage score (30 or 40 points max) - object size in image
-    double bbox_area = result.bbox.width * result.bbox.height;
-    double img_area = image_size.width * image_size.height;
-    result.coverage = bbox_area / img_area;
+    // 2. Distance score - Ideal viewing distance
+    const double ideal_min = cfg.distance.ideal_min;
+    const double ideal_max = cfg.distance.ideal_max;
+    const double max_distance = cfg.distance.max_distance;
+    const double distance_max = use_occlusion ? 20.0 : 30.0;
     
-    double coverage_max = use_occlusion ? 30.0 : 40.0;
-    // Prefer coverage between 5% and 50% (sweet spot for object recognition)
-    if (result.coverage > 0.1 && result.coverage < 0.5) {
-        result.score += coverage_max;  // Optimal range
-    } else if (result.coverage > 0.05 && result.coverage < 0.6) {
-        result.score += coverage_max * 0.75;
-    } else if (result.coverage > 0.02) {
-        result.score += coverage_max * 0.375;
-    } else {
-        result.score += coverage_max * 0.125;  // Very small objects get low score
+    double distance_score = 0.0;
+    if (distance >= ideal_min && distance <= ideal_max) {
+        distance_score = distance_max;  // Perfect distance
+    } else if (distance < ideal_min) {
+        // Too close: linear decay
+        distance_score = distance_max * (distance / ideal_min);
+    } else if (distance <= max_distance) {
+        // Too far: linear decay
+        double ratio = (max_distance - distance) / (max_distance - ideal_max);
+        distance_score = distance_max * ratio;
     }
+    // else: beyond max_distance, score = 0
+    result.score += distance_score;
     
-    // 3. Occlusion score (25 points max) - NEW: how much of the object is unoccluded
+    // 3. Occlusion score (35 points max, only when occlusion detection is enabled)
     if (use_occlusion) {
         result.occlusion_score = calculateOcclusionScore(attrs, depth_image, world_T_camera, image_size);
         result.score += result.occlusion_score;
     } else {
-        result.occlusion_score = cfg.occlusion.max_score;  // Full score if not checking
+        result.occlusion_score = 0;  // Not applicable when occlusion detection is off
     }
     
-    // 4. Center score (5 or 10 points max) - reduced weight, not critical for VLM
+    // 4. Coverage score - object size in image
+    double bbox_area = result.bbox.width * result.bbox.height;
+    double img_area = image_size.width * image_size.height;
+    result.coverage = bbox_area / img_area;
+    
+    const double coverage_max = use_occlusion ? 15.0 : 25.0;
+    // Prefer coverage between 5% and 50% (sweet spot for object recognition)
+    if (result.coverage > 0.1 && result.coverage < 0.5) {
+        result.score += coverage_max;  // Optimal range
+    } else if (result.coverage > 0.05 && result.coverage < 0.6) {
+        result.score += coverage_max * 0.7;
+    } else if (result.coverage > 0.02) {
+        result.score += coverage_max * 0.3;
+    }
+    // else: too small, score = 0
+    
+    // 5. Center score - object position in frame
     double cx_bbox = result.bbox.x + result.bbox.width / 2.0;
     double cy_bbox = result.bbox.y + result.bbox.height / 2.0;
     double cx_img = image_size.width / 2.0;
     double cy_img = image_size.height / 2.0;
     double dist_to_center = std::sqrt(std::pow(cx_bbox - cx_img, 2) + std::pow(cy_bbox - cy_img, 2));
     double max_dist = std::sqrt(cx_img*cx_img + cy_img*cy_img);
-    double center_max = use_occlusion ? 5.0 : 10.0;
+    const double center_max = use_occlusion ? 5.0 : 10.0;
     result.score += (1.0 - (dist_to_center / max_dist)) * center_max;
     
-    // 5. Margin score (10 or 15 points max) - object fully in frame
+    // 6. Margin score (5 points max) - object fully in frame
     const int margin = 20;
-    double margin_max = use_occlusion ? 10.0 : 15.0;
+    const double margin_max = 5.0;
     if (result.bbox.x > margin && result.bbox.y > margin &&
         result.bbox.x + result.bbox.width < image_size.width - margin &&
         result.bbox.y + result.bbox.height < image_size.height - margin) {
@@ -410,6 +444,20 @@ std::pair<cv::Mat, double> PhysicalInferenceNode::extractBestObjectImage(
     }
 
     cv::Mat final_image = best.original_image(expanded_bbox).clone(); // Clone to be safe
+
+    // Optionally draw tight bbox on crop so VLM knows which object to analyze (avoids ambiguity when crop contains multiple objects)
+    if (cfg.image.draw_bbox_for_vlm) {
+        const int x_rel = best.bbox.x - expanded_bbox.x;
+        const int y_rel = best.bbox.y - expanded_bbox.y;
+        const int w = best.bbox.width;
+        const int h = best.bbox.height;
+        // Clamp to crop bounds
+        const int x_clamp = std::max(0, std::min(x_rel, final_image.cols - 1));
+        const int y_clamp = std::max(0, std::min(y_rel, final_image.rows - 1));
+        const int w_clamp = std::max(1, std::min(w, final_image.cols - x_clamp));
+        const int h_clamp = std::max(1, std::min(h, final_image.rows - y_clamp));
+        cv::rectangle(final_image, cv::Rect(x_clamp, y_clamp, w_clamp, h_clamp), cv::Scalar(0, 0, 255), 2);  // BGR red
+    }
 
     // Archive image for future reference (dataset creation)
     std::string archive_dir = output_dir_ + "/objects";

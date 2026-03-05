@@ -7,11 +7,13 @@ image:
   # Bounding box expansion factor (0.3 = 30% padding)
   padding_factor: 0.5
   # Minimum acceptable image score (0-100)
-  score_threshold: 60.0
+  score_threshold: 65.0
   # High quality threshold, inference will be triggered when this score is reached
   high_quality_threshold: 70.0
   # Projection mode: "mesh_vertices" (original method, accurate but slow) or "hydra_bbox" (fast, depends on Hydra bbox)
   projection_mode: "hydra_bbox"
+  # Draw a red bbox on the cropped image sent to VLM so the model knows which object to analyze (helps when crop contains multiple objects)
+  draw_bbox_for_vlm: true
 
 # === Keyframe database parameters ===
 keyframe:
@@ -59,7 +61,7 @@ object_maturity:
   # Minimum "maturity" time for objects (seconds), waiting for Hydra bbox to stabilize
   min_age_seconds: 1.0
   # Whether to enable maturity detection
-  enable: true
+  enable: false
 
 # === Occlusion detection parameters ===
 occlusion:
@@ -70,7 +72,17 @@ occlusion:
   # Number of occlusion detection sample points (from bbox/mesh, reducing computation)
   sample_points: 50
   # Maximum occlusion score (full score when not occluded)
-  max_score: 25
+  max_score: 35
+
+# === Distance-based scoring parameters ===
+distance:
+  # Ideal distance range for observation (meters)
+  ideal_min: 0.6  # Minimum ideal distance
+  ideal_max: 4.0  # Maximum ideal distance
+  # Maximum effective distance (beyond this, score approaches zero)
+  max_distance: 8.0
+  # Maximum distance score (points)
+  max_score: 20
 
 # === Debug parameters ===
 debug:

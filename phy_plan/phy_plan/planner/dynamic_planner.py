@@ -171,9 +171,250 @@ class DynamicPlannerPipeline:
         # State
         self._current_plan: Optional[TaskSequence] = None
         self._current_scene_graph: Optional[SceneGraph] = None
+        self._current_instruction: str = ""  # stored for handle_step_result()
         self._execution_index: int = 0
         self._replan_count: int = 0
         self._replan_events: List[ReplanEvent] = []
+    
+    # ==================== Public Methods (for PhyPlanPipeline) ====================
+    
+    def plan_initial(
+        self,
+        instruction: Optional[str] = None,
+        scene_graph: Optional[SceneGraph] = None
+    ) -> TaskSequence:
+        """
+        Run initial planning (blocking for LLM call + user interaction).
+        
+        Uses LLMPlannerPipeline.run_interactive() when available for full features
+        (info_request, spatial resolution, physics validation, user confirmation).
+        Falls back to conversation mode or direct plan() when no pipeline.
+        
+        After success, internal state is ready for handle_step_result() calls.
+        
+        Args:
+            instruction: Natural language task instruction.
+                         If None and pipeline available, run_interactive() prompts user.
+                         If None and no pipeline, raises ValueError.
+            scene_graph: Initial scene graph (uses subscriber if None)
+            
+        Returns:
+            TaskSequence ready for execution
+            
+        Raises:
+            ValueError: If planning fails (no scene graph, cancelled, infeasible, etc.)
+        """
+        self._replan_events = []
+        self._replan_count = 0
+        
+        # 1. Get scene graph
+        self._current_scene_graph = scene_graph or self._get_latest_scene_graph()
+        if self._current_scene_graph is None:
+            raise ValueError("No scene graph available for planning")
+        
+        if self._debug:
+            if self._pipeline:
+                print(f"[DynamicPipeline] Planning with LLMPlannerPipeline (interactive)")
+            else:
+                mode_str = "conversation" if self._use_conversation else "legacy"
+                print(f"[DynamicPipeline] Planning for: {instruction} (mode: {mode_str})")
+        
+        # 2. Planning
+        if self._pipeline:
+            # run_interactive accepts None → prompts user in terminal
+            task_seq = self._pipeline.run_interactive(
+                initial_instruction=instruction,
+                debug=self._debug
+            )
+            # Handle special return values from run_interactive
+            if task_seq.task_name in ("Empty", "Error", "Cancelled"):
+                raise ValueError(f"Interactive planning returned: {task_seq.task_name}")
+            self._conversation_initialized = True
+            result = task_seq
+            # Capture the instruction from the pipeline if we didn't have one
+            if instruction is None:
+                instruction = task_seq.task_name or "interactive_task"
+        elif instruction is not None:
+            if self._use_conversation:
+                if not self._conversation_initialized:
+                    self._init_planning_conversation()
+                    self._conversation_initialized = True
+                result = self._chat_for_plan(instruction, self._current_scene_graph)
+            else:
+                result, _ = self.planner.plan(
+                    self._current_scene_graph, instruction, debug=self._debug
+                )
+        else:
+            raise ValueError("No instruction provided and no interactive pipeline available")
+        
+        # Handle non-TaskSequence results
+        if isinstance(result, ClarificationRequest):
+            raise ValueError(f"Clarification needed: {result.question}")
+        if isinstance(result, InfeasiblePlan):
+            raise ValueError(f"Task infeasible: {result.reason}")
+        
+        # 3. Initialize execution state
+        self.init_execution_state(result, instruction)
+        
+        return result
+    
+    def init_execution_state(
+        self,
+        task_seq: TaskSequence,
+        instruction: str,
+        scene_graph: Optional[SceneGraph] = None
+    ) -> None:
+        """
+        Initialize execution state for a TaskSequence.
+        
+        Called by plan_initial() internally, or directly for external TaskSequence
+        (e.g., loaded from JSON file via PhyPlanPipeline.run_from_json()).
+        
+        Sets up: current plan, instruction, execution index, change detector.
+        
+        Args:
+            task_seq: TaskSequence to prepare for execution
+            instruction: Original instruction (stored for replanning context)
+            scene_graph: Scene graph override (uses current if None)
+        """
+        if scene_graph is not None:
+            self._current_scene_graph = scene_graph
+        
+        # If still no scene graph, try subscriber
+        if self._current_scene_graph is None:
+            self._current_scene_graph = self._get_latest_scene_graph()
+        
+        self._current_plan = task_seq
+        self._current_instruction = instruction
+        self._execution_index = 0
+        
+        # Initialize change detector with task-relevant objects
+        relevant_objects = self._extract_relevant_objects(task_seq)
+        self._change_detector = ChangeDetector(
+            task_relevant_objects=relevant_objects,
+            position_threshold=self._position_threshold
+        )
+        if self._current_scene_graph:
+            self._change_detector.update_baseline(self._current_scene_graph)
+        
+        if self._debug:
+            print(f"[DynamicPipeline] Execution state initialized: "
+                  f"{len(task_seq.actions)} actions, "
+                  f"tracking {len(relevant_objects)} objects")
+    
+    def handle_step_result(
+        self,
+        action: Action,
+        success: bool,
+        error: str = "",
+        on_replan: Optional[Callable[[ReplanEvent], None]] = None
+    ) -> Optional[TaskSequence]:
+        """
+        Handle step completion/failure. May trigger replanning.
+        
+        Called by PhyPlanPipeline._on_step_complete() callback after each
+        PrimitiveController step finishes.
+        
+        Args:
+            action: The Action that just completed/failed
+            success: Whether the step succeeded
+            error: Error message (if failed)
+            on_replan: Optional callback when replanning occurs
+            
+        Returns:
+            New TaskSequence if replanned, None if continuing normally
+        """
+        instruction = self._current_instruction
+        
+        if not success:
+            # Execution failure -> immediate replan
+            if self._debug:
+                print(f"[DynamicPipeline] Step failed: {action.description} - {error}")
+            
+            exec_result = ExecutionResult(
+                success=False, action=action, error_message=error
+            )
+            replan_ok = self._handle_failure_replan(
+                instruction, action, exec_result, on_replan
+            )
+            if replan_ok:
+                return self._current_plan  # New plan from failure replan
+            return None  # Replan failed, caller should stop
+        
+        # Success path
+        action.status = TaskStatus.COMPLETED
+        self._execution_index += 1
+        
+        # Check scene after certain action types
+        if self._should_check_scene(action):
+            change_detected = self._check_and_handle_scene_change(
+                instruction, on_replan
+            )
+            if change_detected and self._current_plan is not None:
+                return self._current_plan  # New plan from scene change
+            # If change_detected and _current_plan is None, replan failed
+        
+        return None  # No replan needed, continue normally
+    
+    # ==================== Validated Replan ====================
+    
+    def _validated_replan(
+        self,
+        context_message: str,
+        scene_graph: SceneGraph
+    ) -> Union[TaskSequence, InfeasiblePlan]:
+        """
+        Replan with interactive multi-turn dialogue.
+        
+        Delegates to LLMPlannerPipeline._interactive_loop(replan_mode=True)
+        for full interaction support: info_request, clarification, physics
+        validation, user confirmation — all while preserving conversation history.
+        
+        Args:
+            context_message: Context about failure/scene change
+            scene_graph: Updated scene graph
+            
+        Returns:
+            TaskSequence if successful, InfeasiblePlan otherwise
+        """
+        compact_json = scene_graph.to_compact_json()
+        replan_prompt = (
+            f"{context_message}\n\n"
+            f"Updated Scene Graph (supersedes the scene graph in the system prompt):\n"
+            f"{compact_json}\n\n"
+            f"Please generate a new plan considering the above context and updated scene."
+        )
+        
+        # Update pipeline's scene graph to latest
+        self._pipeline._scene_graph = scene_graph
+        
+        if self._debug:
+            print(f"[DynamicPipeline] Interactive replan via _interactive_loop...")
+        
+        # Send replan context and get initial LLM response
+        response_text = self.planner.agent.chat(replan_prompt)
+        
+        if self._debug:
+            print(f"\n{'='*40} DEBUG: REPLAN RESPONSE {'='*40}")
+            print(response_text)
+            print(f"{'='*97}\n")
+        
+        # Enter interactive loop for multi-turn processing
+        self._pipeline._pending_response = response_text
+        result = self._pipeline._interactive_loop(
+            self._current_instruction, self._debug, replan_mode=True
+        )
+        
+        # Convert special task names to appropriate return types
+        if result.task_name in ("Cancelled", "Empty", "Error"):
+            return InfeasiblePlan(
+                reason=f"Interactive replan ended: {result.task_name}",
+                chain_of_thought="",
+                suggestions=[]
+            )
+        return result
+    
+    # ==================== Blocking Execution (backward compatible) ====================
     
     def plan_and_execute(
         self,
@@ -183,7 +424,13 @@ class DynamicPlannerPipeline:
         on_replan: Optional[Callable[[ReplanEvent], None]] = None
     ) -> PipelineResult:
         """
-        Plan and execute a task with dynamic replanning
+        Plan and execute a task with dynamic replanning (blocking execution).
+        
+        This is the original blocking API, mainly for offline testing, experiments,
+        and BehaviorExecutor-based execution. Internally delegates to plan_initial()
+        and handle_step_result().
+        
+        For non-blocking ROS-compatible execution, use PhyPlanPipeline instead.
         
         Args:
             instruction: Natural language instruction
@@ -196,108 +443,18 @@ class DynamicPlannerPipeline:
         """
         start_time = time.time()
         total_actions = 0
-        self._replan_events = []
-        self._replan_count = 0
         
-        # 1. Get initial scene graph
-        self._current_scene_graph = initial_scene_graph
-        if self._current_scene_graph is None:
-            self._current_scene_graph = self._get_latest_scene_graph()
-        
-        if self._current_scene_graph is None:
+        # 1. Planning (delegates to plan_initial)
+        try:
+            self.plan_initial(instruction, initial_scene_graph)
+        except ValueError as e:
             return PipelineResult(
                 success=False,
-                error_message="Failed to get initial scene graph"
-            )
-        
-        # 2. Initial planning
-        if self._debug:
-            if self._pipeline:
-                print(f"[DynamicPipeline] Planning with LLMPlannerPipeline (interactive)")
-            else:
-                mode_str = "conversation" if self._use_conversation else "legacy"
-                print(f"[DynamicPipeline] Planning for: {instruction} (mode: {mode_str})")
-        
-        # Use pipeline for interactive planning if available
-        if self._pipeline:
-            # Use pipeline's run_interactive for full interactive planning
-            # This supports clarification, user input, and SpatialResolver
-            task_seq = self._pipeline.run_interactive(
-                initial_instruction=instruction,
-                debug=self._debug
-            )
-            
-            # Handle special cases from run_interactive
-            if task_seq.task_name == "Empty":
-                return PipelineResult(
-                    success=False,
-                    error_message="No instruction provided",
-                    execution_time=time.time() - start_time
-                )
-            
-            if task_seq.task_name == "Error":
-                return PipelineResult(
-                    success=False,
-                    error_message="Interactive planning failed",
-                    execution_time=time.time() - start_time
-                )
-            
-            if task_seq.task_name == "Cancelled":
-                return PipelineResult(
-                    success=False,
-                    error_message="User cancelled planning",
-                    execution_time=time.time() - start_time
-                )
-            
-            result = task_seq
-            # Mark conversation as initialized (pipeline already set it up)
-            self._conversation_initialized = True
-            
-        elif self._use_conversation:
-            # Initialize conversation on first use
-            if not self._conversation_initialized:
-                self._init_planning_conversation()
-                self._conversation_initialized = True
-            
-            result = self._chat_for_plan(instruction, self._current_scene_graph)
-        else:
-            # Legacy mode: use planner.plan()
-            result, _ = self.planner.plan(
-                self._current_scene_graph,
-                instruction,
-                debug=self._debug
-            )
-        
-        # Handle planning result
-        if isinstance(result, ClarificationRequest):
-            return PipelineResult(
-                success=False,
-                error_message=f"Clarification needed: {result.question}",
+                error_message=str(e),
                 execution_time=time.time() - start_time
             )
         
-        if isinstance(result, InfeasiblePlan):
-            return PipelineResult(
-                success=False,
-                error_message=f"Task infeasible: {result.reason}",
-                execution_time=time.time() - start_time
-            )
-        
-        self._current_plan = result
-        self._execution_index = 0
-        
-        # 3. Initialize change detector with task-relevant objects
-        relevant_objects = self._extract_relevant_objects(self._current_plan)
-        self._change_detector = ChangeDetector(
-            task_relevant_objects=relevant_objects,
-            position_threshold=self._position_threshold
-        )
-        self._change_detector.update_baseline(self._current_scene_graph)
-        
-        if self._debug:
-            print(f"[DynamicPipeline] Tracking {len(relevant_objects)} task-relevant objects")
-        
-        # 4. Execute with monitoring
+        # 2. Execute with monitoring (blocking loop)
         while self._execution_index < len(self._current_plan.actions):
             action = self._current_plan.actions[self._execution_index]
             
@@ -307,31 +464,28 @@ class DynamicPlannerPipeline:
                 if len(expanded) > 1:
                     if self._debug:
                         print(f"[DynamicPipeline] Expanded ARRANGE to {len(expanded)} sub-actions")
-                    # Replace ARRANGE with expanded sub-actions in-place
                     self._current_plan.actions[self._execution_index:self._execution_index+1] = expanded
                     action = self._current_plan.actions[self._execution_index]
             
             if self._debug:
-                print(f"[DynamicPipeline] Executing action {self._execution_index + 1}/{len(self._current_plan.actions)}: {action.description}")
+                print(f"[DynamicPipeline] Executing action {self._execution_index + 1}/"
+                      f"{len(self._current_plan.actions)}: {action.description}")
             
-            # Execute action
+            # Execute action (blocking)
             exec_result = self._execute_action(action)
             total_actions += 1
             
-            # Callback
             if on_action_complete:
                 on_action_complete(action, exec_result)
             
+            # Handle step result (delegates to handle_step_result)
+            new_plan = self.handle_step_result(
+                action, exec_result.success, exec_result.error_message, on_replan
+            )
+            
             if not exec_result.success:
-                # Trigger 1: Execution failure -> immediate replan
-                if self._debug:
-                    print(f"[DynamicPipeline] Action failed: {exec_result.error_message}")
-                
-                replan_result = self._handle_failure_replan(
-                    instruction, action, exec_result, on_replan
-                )
-                
-                if not replan_result:
+                if new_plan is None:
+                    # Replan failed
                     return PipelineResult(
                         success=False,
                         task_sequence=self._current_plan,
@@ -340,25 +494,23 @@ class DynamicPlannerPipeline:
                         execution_time=time.time() - start_time,
                         error_message=f"Execution failed and replanning unsuccessful: {exec_result.error_message}"
                     )
+                # new_plan is not None -> replan succeeded, _current_plan updated, continue loop
                 continue
             
-            # Mark action complete
-            action.status = TaskStatus.COMPLETED
-            self._execution_index += 1
+            # Success path: handle_step_result already updated _execution_index
+            if new_plan is not None:
+                # Scene change triggered replan, _current_plan updated
+                pass  # Continue with new plan
             
-            # Trigger 2: Check scene after subtask completion
-            if self._should_check_scene(action):
-                change_detected = self._check_and_handle_scene_change(
-                    instruction, on_replan
+            if self._current_plan is None:
+                # Scene change replan failed
+                return PipelineResult(
+                    success=False,
+                    total_actions_executed=total_actions,
+                    replan_events=self._replan_events,
+                    execution_time=time.time() - start_time,
+                    error_message="Scene change detected but replanning failed"
                 )
-                if change_detected and self._current_plan is None:
-                    return PipelineResult(
-                        success=False,
-                        total_actions_executed=total_actions,
-                        replan_events=self._replan_events,
-                        execution_time=time.time() - start_time,
-                        error_message="Scene change detected but replanning failed"
-                    )
         
         # Success
         self._current_plan.status = TaskStatus.COMPLETED
@@ -486,35 +638,17 @@ class DynamicPlannerPipeline:
         
         # Build failure context (in ENGLISH for LLM)
         failure_context = (
+            f"[EXECUTION FAILURE]\n"
             f"Previous action failed: {failed_action.description}\n"
             f"Error: {exec_result.error_message}\n"
             f"Please replan considering this failure."
         )
         
-        # Use conversation mode or legacy mode
-        if self._use_conversation and self._conversation_initialized:
-            # Continue conversation (LLM sees execution history)
-            # Use planner's agent (shared conversation history)
-            result = self.planner.replan_from_context(
-                conversation_agent=self.planner.agent,
-                context_message=failure_context,
-                scene_graph=new_sg,
-                debug=self._debug
-            )
-        else:
-            # Legacy mode: independent plan() call
-            augmented_instruction = f"{instruction}\n\n[EXECUTION FAILURE]\n{failure_context}"
-            result, _ = self.planner.plan(new_sg, augmented_instruction, debug=self._debug)
+        # Use _validated_replan (interactive multi-turn dialogue)
+        result = self._validated_replan(failure_context, new_sg)
         
         if isinstance(result, InfeasiblePlan):
             return False
-        
-        if isinstance(result, ClarificationRequest):
-            # Try interactive clarification instead of failing immediately
-            resolved = self._handle_replan_clarification(result, instruction, new_sg)
-            if resolved is None:
-                return False
-            result = resolved
         
         # Record event
         event = ReplanEvent(
@@ -544,74 +678,6 @@ class DynamicPlannerPipeline:
         
         return True
     
-    def _handle_replan_clarification(
-        self,
-        clarification: ClarificationRequest,
-        instruction: str,
-        scene_graph: SceneGraph
-    ) -> Optional[TaskSequence]:
-        """
-        Handle ClarificationRequest during replan by asking user interactively.
-        
-        Tries spatial auto-resolution first, then falls back to user input.
-        
-        Args:
-            clarification: The ClarificationRequest from the LLM
-            instruction: Original task instruction
-            scene_graph: Current (latest) scene graph
-            
-        Returns:
-            TaskSequence if resolved, None if failed/cancelled
-        """
-        candidates = clarification.candidates
-        
-        # Try automatic spatial resolution first
-        if self.planner._enable_spatial and self.planner._spatial_resolver:
-            resolved_id = self.planner._spatial_resolver.resolve(
-                instruction, candidates, scene_graph
-            )
-            if resolved_id:
-                print(f"\n[DynamicPipeline] Auto-resolved spatial reference: {resolved_id}")
-                response_text = self.planner.agent.chat(
-                    f"User selected object: {resolved_id}\nPlease generate the plan."
-                )
-                try:
-                    resp = self.planner.parse_response(response_text)
-                    if not resp.get("clarification_needed") and not resp.get("infeasible_reason"):
-                        return self.planner.convert_to_task_sequence(resp, scene_graph, instruction)
-                except ValueError:
-                    pass
-                return None
-        
-        # Display clarification to user
-        print(f"\n[DynamicPipeline] Clarification needed during replan:")
-        print(f"  {clarification.question}")
-        print("  candidates:")
-        for i, c in enumerate(candidates, 1):
-            cat = c.get("category", "unknown")
-            oid = c.get("object_id", "?")
-            desc = c.get("description", "")
-            print(f"    {i}. {cat} ({oid})")
-            if desc:
-                print(f"       {desc[:100]}")
-        
-        user_answer = input("\nplease answer: ").strip()
-        if not user_answer:
-            return None
-        
-        # Continue conversation with user's answer
-        response_text = self.planner.agent.chat(f"User Answer: {user_answer}")
-        
-        try:
-            resp = self.planner.parse_response(response_text)
-            if resp.get("clarification_needed") or resp.get("infeasible_reason"):
-                print("[DynamicPipeline] Replan clarification still unresolved, giving up")
-                return None
-            return self.planner.convert_to_task_sequence(resp, scene_graph, instruction)
-        except ValueError as e:
-            print(f"[DynamicPipeline] Failed to parse replan response: {e}")
-            return None
-    
     def _handle_scene_change_replan(
         self,
         instruction: str,
@@ -636,20 +702,11 @@ class DynamicPlannerPipeline:
         # Build change context (in ENGLISH for LLM)
         change_context = change_report.to_replan_context()
         
-        # Use conversation mode or legacy mode
-        if self._use_conversation and self._conversation_initialized:
-            # Continue conversation (LLM sees what happened before)
-            # Use planner's agent (shared conversation history)
-            result = self.planner.replan_from_context(
-                conversation_agent=self.planner.agent,
-                context_message=f"Scene changed:\n{change_context}",
-                scene_graph=new_sg,
-                debug=self._debug
-            )
-        else:
-            # Legacy mode: independent plan() call
-            augmented_instruction = f"{instruction}\n\n[SCENE CHANGE]\n{change_context}"
-            result, _ = self.planner.plan(new_sg, augmented_instruction, debug=self._debug)
+        # Use _validated_replan (interactive multi-turn dialogue)
+        result = self._validated_replan(
+            f"[SCENE CHANGE]\nScene changed:\n{change_context}",
+            new_sg
+        )
         
         # Record event
         event = ReplanEvent(
@@ -668,14 +725,6 @@ class DynamicPlannerPipeline:
         if isinstance(result, InfeasiblePlan):
             self._current_plan = None
             return True
-        
-        if isinstance(result, ClarificationRequest):
-            # Try interactive clarification instead of failing immediately
-            resolved = self._handle_replan_clarification(result, instruction, new_sg)
-            if resolved is None:
-                self._current_plan = None
-                return True
-            result = resolved
         
         # Update state
         self._current_plan = result

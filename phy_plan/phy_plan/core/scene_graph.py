@@ -134,6 +134,9 @@ class ObjectNode:
             "room_id": self.room_id
         }
         
+        if self.physical_properties:
+            result["has_physics"] = True
+        
         # Add position for spatial reasoning (optional, increases token usage)
         if include_position and self.position:
             result["position"] = {
@@ -660,7 +663,12 @@ class SceneGraph:
                 include_position=include_position
             ))
         
-        return json.dumps(compact, indent=2, ensure_ascii=False)
+        try:
+            return json.dumps(compact, indent=2, ensure_ascii=False)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise
     
     def to_dict(self) -> Dict[str, Any]:
         """convert to complete dictionary format"""

@@ -1,5 +1,10 @@
 """
 Main robot controller that manages different control modes.
+
+Control modes:
+    - idle: robot does nothing
+    - teleop: keyboard teleoperation
+    - primitive: semantic action primitives (G key: hardcoded/JSON, P key: LLM pipeline)
 """
 import rospy
 import numpy as np
@@ -31,6 +36,19 @@ class RobotController:
         
         # Idle action cache
         self._idle_action = None
+    
+    def set_pipeline(self, pipeline):
+        """
+        Inject PhyPlanPipeline into PrimitiveController.
+        
+        Called by behavior_ros_robot.py after creating the full pipeline chain.
+        Enables P key (LLM planning) and G key (JSON loading) on PrimitiveController.
+        
+        Args:
+            pipeline: PhyPlanPipeline instance (created externally)
+        """
+        self.primitive_controller.set_pipeline(pipeline)
+        rospy.loginfo("[RobotController] PhyPlanPipeline injected (P/G key enabled)")
     
     def _get_idle_action(self):
         """

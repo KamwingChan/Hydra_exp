@@ -4,6 +4,7 @@
 #include <XmlRpcValue.h>
 #include <hydra/common/global_info.h>
 #include <algorithm>
+#include <cctype>  // for std::isdigit
 
 namespace phy_graph {
 
@@ -138,6 +139,44 @@ std::string RoomClassifier::classify(const RoomNode& room,
                                      const std::vector<EnhancedObjectNode>& objects) {
     std::string room_id_str = nodeIdToString(room.room_id);
     ros::Time now = ros::Time::now();
+
+    // ===== 检查房间是否已有明确的类别（来自 BEHAVIOR） =====
+    // 如果房间类别不是 "TODO" 或 "R(数字)" 格式，说明来自 BEHAVIOR，信任它
+    std::string current_category = room.category;
+    
+    // 判断是否是 Hydra 格式（R(数字)）或未分类状态
+    bool is_hydra_format = false;
+    if (current_category == "TODO" || current_category.empty()) {
+        is_hydra_format = true;
+    } else if (current_category.length() >= 3 && 
+               current_category[0] == 'R' && 
+               current_category[1] == '(' && 
+               std::isdigit(current_category[2])) {
+        is_hydra_format = true;
+    }
+    
+    // 如果不是 Hydra 格式，说明是 BEHAVIOR 来源的明确类别，直接返回
+    if (!is_hydra_format) {
+        // 进一步验证：检查是否在已知的房间类型列表中
+        bool is_known_type = false;
+        for (const auto& [room_type, _] : room_rules_) {
+            if (current_category == room_type || 
+                current_category.find(room_type) != std::string::npos) {
+                is_known_type = true;
+                break;
+            }
+        }
+        
+        if (is_known_type) {
+            ROS_INFO("Room %s already has BEHAVIOR category '%s', preserving it.",
+                     room_id_str.c_str(), current_category.c_str());
+            return current_category;
+        }
+        // 如果不是已知类型但也不是 Hydra 格式，仍然保留（可能是自定义类别）
+        ROS_INFO("Room %s has non-standard category '%s', preserving it.",
+                 room_id_str.c_str(), current_category.c_str());
+        return current_category;
+    }
 
     // 1. 内容 hash
     size_t current_hash = objects.size();

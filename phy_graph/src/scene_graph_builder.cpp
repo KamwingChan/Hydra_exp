@@ -3,6 +3,7 @@
 
 #include <ros/ros.h>
 #include <algorithm>
+#include <cctype>  // for std::isdigit
 #include <map>
 #include <hydra/common/global_info.h>
 #include <unordered_map>
@@ -100,6 +101,29 @@ std::vector<RoomNode> GraphGenerator::extractRoomsFromDSG(
         
         // Extract position (room centroid)
         room.position = node.attributes().position;
+        
+        // ===== Extract room name from DSG node attributes =====
+        // 判断是 BEHAVIOR 来源（有明确类别）还是 Hydra 来源（R(数字) 格式）
+        try {
+            const auto& attrs = node.attributes<hydra::SemanticNodeAttributes>();
+            std::string room_name = attrs.name;
+            
+            // 检查是否是 Hydra 格式：R(数字)
+            // 如果是，说明是 Hydra 来源，需要分类器推断
+            // 如果不是，说明是 BEHAVIOR 来源，保留原有类别
+            if (room_name.empty() || 
+                (room_name.length() >= 3 && room_name[0] == 'R' && 
+                 room_name[1] == '(' && std::isdigit(room_name[2]))) {
+                // Hydra 来源：name 是 "R(3)" 格式或空，设置为 "TODO" 等待分类
+                room.category = "TODO";
+            } else {
+                // BEHAVIOR 来源：name 是明确的房间类别（如 "Office", "Kitchen"），保留它
+                room.category = room_name;
+            }
+        } catch (...) {
+            // 如果无法获取属性，保持默认值 "TODO"
+            room.category = "TODO";
+        }
         
         // ===== Extract / compute bounding box =====
         // 优先使用 Hydra 提供的 AABB；如果没有，则用房间内的 Place 节点位置计算一个简单 AABB。

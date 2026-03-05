@@ -4,28 +4,32 @@ Scene configuration for OmniGibson.
 from omnigibson.macros import gm
 
 
-def choose_scene(scene_name, scene_file, semantic_segmentation=True):
+def choose_scene(scene_name, scene_file, semantic_segmentation=True, trav_map_path=None, trav_map_resolution=0.01):
     """
     Create scene configuration for OmniGibson.
-    
+
     Args:
         scene_name: Name of the scene model
         scene_file: Path to scene JSON file
         semantic_segmentation: Whether to enable semantic segmentation
-        
+        trav_map_path: If not None, custom trav map will be injected; scene uses trav_map_resolution.
+        trav_map_resolution: When trav_map_path is set, map resolution (m/px). 0.01 keeps full res (no wall loss).
     Returns:
         cfg: Scene configuration dictionary
     """
+    scene_cfg = {
+        "type": "InteractiveTraversableScene",
+        "scene_model": scene_name,
+        "scene_file": scene_file,
+    }
+    if trav_map_path is not None:
+        scene_cfg["trav_map_resolution"] = trav_map_resolution
     cfg = {
         "render": {
             "viewer_width": gm.DEFAULT_VIEWER_WIDTH,
             "viewer_height": gm.DEFAULT_VIEWER_HEIGHT,
         },
-        "scene": {
-            "type": "InteractiveTraversableScene",
-            "scene_model": scene_name,
-            "scene_file": scene_file,
-        },
+        "scene": scene_cfg,
         "robots": [
             {
                 "type": "Stretch",

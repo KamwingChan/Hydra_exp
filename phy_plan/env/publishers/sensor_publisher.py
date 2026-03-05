@@ -70,7 +70,7 @@ class SensorPublisher:
             parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             if parent_dir not in sys.path:
                 sys.path.insert(0, parent_dir)
-            from util.dsg_utils import DsgPublisher
+            from tools.dsg_utils import DsgPublisher
             self.dsg_publisher = DsgPublisher()
             rospy.loginfo("DSG publishing enabled for phy_graph")
         except ImportError as e:

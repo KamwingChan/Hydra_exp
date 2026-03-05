@@ -6,7 +6,8 @@
 
 # 包含的物体类别（与机器人操作任务相关的物体）
 # NOTE: lamp 和 plant 这种装饰性物体不应该在里面
-included_categories:
+# 参数名必须是 included_labels（代码期望的参数名）
+included_labels:
   # 可坐的家具
   - "chair"
   - "swivel_chair"
@@ -34,9 +35,16 @@ included_categories:
   - "cup"
   - "bottle"
   - "book"
+  # 实验需要
+  - "paper_bag"
+  - "box_of_cookies"
+  - "trash_can"
+  - "sofa"
+  - "game_console"
 
 # 排除的物体模式（场景结构和机器人本身）
-excluded_patterns:
+# 参数名必须是 excluded_labels（代码期望的参数名）
+excluded_labels:
   - "wall*"
   - "floor*"
   - "ceiling*"
@@ -46,3 +54,4 @@ excluded_patterns:
   - "plant*"     # 装饰性物体
   - "picture*"   # 装饰性物体
   - "rug*"       # 装饰性物体
+  - "picture*"   # 装饰性物体

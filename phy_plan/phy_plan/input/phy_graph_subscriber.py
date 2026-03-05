@@ -23,7 +23,6 @@ except ImportError:
 from ..core.scene_graph import SceneGraph
 from .phy_graph_io import load_scene_graph_from_dict
 
-
 class SceneGraphSubscriber:
     """
     scene graph subscriber

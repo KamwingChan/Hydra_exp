@@ -24,6 +24,7 @@ tmp/
 # Outputs
 **/output/*
 **/outputs/*
+.cursor
 
 
 # Doc Outputs

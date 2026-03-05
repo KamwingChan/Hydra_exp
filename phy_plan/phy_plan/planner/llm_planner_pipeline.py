@@ -84,6 +84,7 @@ class LLMPlannerPipeline:
         self._info_provided: bool = False  # Track if info was provided via info_request
         self._provided_objects: List[str] = []  # Track which objects info was provided for
         self._pending_response: Optional[str] = None  # Buffered LLM response from handlers
+        self._replan_mode: bool = False  # True during replan to preserve conversation history
         
         # Load static scene graph if file path provided
         if scene_file and not self._use_subscriber:
@@ -303,8 +304,18 @@ class LLMPlannerPipeline:
         
         return response_text
     
-    def _interactive_loop(self, initial_instruction: str, debug: bool) -> TaskSequence:
-        """Main interactive planning loop"""
+    def _interactive_loop(self, initial_instruction: str, debug: bool,
+                         replan_mode: bool = False) -> TaskSequence:
+        """Main interactive planning loop
+        
+        Args:
+            initial_instruction: Task instruction
+            debug: Enable debug output
+            replan_mode: If True, preserves conversation history (for replanning).
+                         In replan mode, _restart_conversation is skipped to keep
+                         execution failure/scene change context in the conversation.
+        """
+        self._replan_mode = replan_mode
         current_instruction = initial_instruction
         
         while True:
@@ -395,9 +406,10 @@ class LLMPlannerPipeline:
                 new_instruction = self._prompt_new_instruction()
                 if not new_instruction:
                     print("exiting planning.")
-                    return task_seq
+                    return TaskSequence(task_name="Cancelled")
                 current_instruction = new_instruction
-                self._restart_conversation(new_instruction, debug)
+                if not self._replan_mode:
+                    self._restart_conversation(new_instruction, debug)
                 continue
     
     # ==================== Handler Methods ====================
@@ -414,7 +426,7 @@ class LLMPlannerPipeline:
             print(f"Reasoning: {response_dict.get('chain_of_thought')}")
         
         new_instruction = self._prompt_new_instruction()
-        if new_instruction:
+        if new_instruction and not self._replan_mode:
             self._restart_conversation(new_instruction, debug)
         return new_instruction
     
@@ -452,7 +464,8 @@ class LLMPlannerPipeline:
         # Continue conversation with the info
         continuation_prompt = (
             f"{object_info}\n\n"
-            f"Based on the information above, please continue with your planning."
+            f"Based on the information above, continue planning. "
+            f"If multiple candidates still match, use clarification_needed."
         )
         
         response_text = self._get_llm_response(continuation_prompt, is_first=False, debug=debug)
@@ -479,11 +492,7 @@ class LLMPlannerPipeline:
         question = response_dict.get("question", "")
         candidates = response_dict.get("candidates", [])
         
-        # Try automatic spatial resolution
-        if self._try_spatial_resolution(candidates, current_instruction, debug):
-            return "continue"  # Signal to continue loop
-        
-        # Display candidates to user
+        # Display candidates to user (spatial ranking is applied inside _display_candidates)
         self._display_candidates(question, candidates, current_instruction)
         
         # Get user answer
@@ -511,22 +520,9 @@ class LLMPlannerPipeline:
         debug: bool
     ) -> bool:
         """
-        Try automatic spatial resolution
-        
-        Returns:
-            True if resolution succeeded
+        DEPRECATED: No longer called. Spatial disambiguation is now handled
+        entirely via info_request + LLM reasoning. Kept for backward compatibility.
         """
-        if not (self.planner._enable_spatial and self.planner._spatial_resolver):
-            return False
-        
-        resolved_id = self.planner._spatial_resolver.resolve(instruction, candidates, self._scene_graph)
-        if resolved_id:
-            print(f"\n[Robot] Auto-resolved spatial reference, selected: {resolved_id}")
-            prompt = f"User selected object: {resolved_id}\nPlease generate the plan based on this selection."
-            response_text = self._get_llm_response(prompt, is_first=False, debug=debug)
-            self._pending_response = response_text  # Store for next loop iteration
-            return True
-        
         return False
     
     def _display_candidates(
@@ -554,8 +550,10 @@ class LLMPlannerPipeline:
             )
         
         for i, cand in enumerate(candidates, 1):
+            room_id = cand.get('room_id', '')
+            room_name = self._scene_graph.get_room(room_id).category if room_id else ''
             print(f"  {i}. {cand.get('category', '')} ({cand.get('object_id', '')}) "
-                  f"located in {cand.get('room_id', '')}")
+                  f"located in {cand.get('room_id', ''), room_name}")
             if cand.get('position_desc'):
                 print(f"     position: {cand['position_desc']}")
             if cand.get('distance_to_reference') is not None:
@@ -608,7 +606,7 @@ class LLMPlannerPipeline:
         print("This may indicate the task is infeasible or needs clarification.")
         
         new_instruction = self._prompt_new_instruction()
-        if new_instruction:
+        if new_instruction and not self._replan_mode:
             self._restart_conversation(new_instruction, debug)
         return new_instruction
     

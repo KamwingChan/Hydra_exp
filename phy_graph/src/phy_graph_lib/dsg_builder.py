@@ -36,8 +36,28 @@ OBJECT_REAL_DIMENSIONS = {
     ("eames_chair", "mmqvnh"): (0.58, 0.62, 0.78),
     ("eames_chair", "svlwdg"): (0.85, 0.94, 0.75),
     ("coffee_cup", "ckkwmj"): (0.09, 0.07, 0.070),
+    ("paper_bag", "wvhmww"): (0.14, 0.29, 0.51),
+    ("paper_bag", "ruryqd"): (0.12, 0.20, 0.20),
+    ("paper_bag", "bzsxgw"): (0.10, 0.15, 0.24),
+    ("box_of_cookies", "swilxz"): (0.16, 0.17, 0.10),
+    ("trash_can", "gxajos"): (0.36, 0.37, 0.40),
+    ("sofa", "mnfbbh"): (1.04, 2.23, 0.88),
+    ("game_console", "anslwz"): (0.30, 0.27, 0.05),
 }
+# 对齐Object id, 避免DSG中Object id与OmniGibson中Object id不一致
+EXCLUDED_CATEGORIES = frozenset({
+    "walls", "floors", "ceilings", "wall", "floor", "ceiling",
+    "agent", "robot", "fetch", "tiago",
+})
 
+def _should_exclude_object(category: str, name: str) -> bool:
+    """与 dsg_utils.should_include_object 逻辑相反：若 category 或 name 命中黑名单则排除。"""
+    category_lower = (category or "").lower()
+    name_lower = (name or "").lower()
+    for excluded in EXCLUDED_CATEGORIES:
+        if excluded in category_lower or excluded in name_lower:
+            return True
+    return False
 
 def _get_real_dimensions(category: str, model: Optional[str] = None) -> Tuple[float, float, float]:
     """获取类别的真实尺寸"""
@@ -167,7 +187,9 @@ class BehaviorDsgBuilder:
             # 过滤类别
             if self.target_categories and category not in self.target_categories:
                 continue
-            
+            # 过滤对象
+            if _should_exclude_object(category, obj_name):
+                continue
             # 获取位置
             obj_state = object_registry.get(obj_name)
             if obj_state is None:
@@ -274,13 +296,20 @@ class BehaviorDsgBuilder:
         attrs.last_update_time_ns = int(time.time() * 1e9)
         attrs.is_active = True
         
-        # 边界框
-        if "bbox_center" in obj:
-            attrs.bounding_box.world_P_center = np.array(obj["bbox_center"], dtype=np.float64)
+        # 边界框 - 使用构造函数创建（简单构造函数：dimensions, center）
         if "bbox_min" in obj and "bbox_max" in obj:
-            bbox_min = np.array(obj["bbox_min"], dtype=np.float64)
-            bbox_max = np.array(obj["bbox_max"], dtype=np.float64)
-            attrs.bounding_box.dimensions = bbox_max - bbox_min
+            bbox_min = np.array(obj["bbox_min"], dtype=np.float32)
+            bbox_max = np.array(obj["bbox_max"], dtype=np.float32)
+            dimensions = bbox_max - bbox_min
+            center = (bbox_min + bbox_max) / 2.0
+            
+            # 只有当尺寸有效时才创建边界框
+            if np.all(dimensions > 1e-6):
+                try:
+                    # 使用简单构造函数 BoundingBox(dimensions, center)
+                    attrs.bounding_box = dsg.BoundingBox(dimensions, center)
+                except Exception as e:
+                    print(f"[dsg_builder] Failed to create bounding box for {obj.get('name', 'unknown')}: {e}")
         
         # 创建节点 ID
         node_symbol = dsg.NodeSymbol('O', self.object_counter)

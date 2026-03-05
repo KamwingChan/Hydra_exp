@@ -38,6 +38,7 @@ from publishers.sensor_publisher import SensorPublisher
 from publishers.camera_info_publisher import CameraInfoPublisher
 from utils.id_mapper import IDMapper
 from utils.rosbag_manager import RosbagManager
+from utils.trav_map_utils import inject_custom_trav_map
 
 # Global configuration
 gm.USE_GPU_DYNAMICS = False
@@ -51,7 +52,7 @@ gm.DEFAULT_VIEWER_HEIGHT = 480
 class ROSBehavior:
     """Main class for ROS-enabled OmniGibson simulation with robot control."""
     
-    def __init__(self, env, record_rosbag=False, publish_dsg=False, semantic_segmentation=True, execution_mode=None):
+    def __init__(self, env, record_rosbag=False, publish_dsg=False, semantic_segmentation=True, execution_mode=None, scene_name=None):
         """
         Initialize ROSBehavior.
         
@@ -69,7 +70,7 @@ class ROSBehavior:
         self.semantic_segmentation = semantic_segmentation
         self.width = 640
         self.height = 480
-        
+        self.scene_name = scene_name
         # Robot and sensor setup
         self.robot = self.env.robots[0]
         pos, orn = self.robot.get_position_orientation()
@@ -155,14 +156,14 @@ class ROSBehavior:
         mode = msg.data.strip().lower()
         self.robot_controller.set_mode(mode)
         
-        # 根据模式启用/禁用 camera_mover 的键盘监听
+        # enable/disable camera_mover keyboard listening based on mode
         if mode == "teleop":
-            # 切换到 teleop：禁用 camera_mover 键盘，避免冲突
+            # switch to teleop: disable camera_mover keyboard, avoid conflict
             if self.camera_mover:
                 self.camera_mover.disable()
                 rospy.loginfo("Camera mover keyboard disabled (teleop mode)")
         else:
-            # 切换到 idle/primitive：重新启用 camera_mover 键盘
+            # switch to idle/primitive: re-enable camera_mover keyboard
             if self.camera_mover:
                 self.camera_mover.enable()
                 rospy.loginfo("Camera mover keyboard enabled")
@@ -170,12 +171,12 @@ class ROSBehavior:
     def _setup_camera_mover(self):
         """Setup camera mover for viewer camera control."""
         viewer_cam = self.sensor
-        viewer_cam.set_position_orientation(
-            position=[1.35, 4.63, 1.93],
-            orientation=[0.19, 0.62, 0.71, 0.22]
-        )
+        if self.scene_name == "office_vendor_machine":
+                viewer_cam.set_position_orientation(position=[1.35, 4.63, 1.93], orientation=[0.19, 0.62, 0.71, 0.22])
+        elif self.scene_name == "Rs_int":
+                viewer_cam.set_position_orientation(position=[0.8253, -2.6221,  1.6581], orientation=[0.6108, 0.1980, 0.2341, 0.7300])
         self.camera_mover = CameraMover(viewer_cam)
-        # 如果默认是 teleop 模式，禁用 camera_mover 的键盘监听
+        # if default is teleop mode, disable camera_mover keyboard listening
         if self.robot_controller.control_mode == "teleop":
             self.camera_mover.disable()
             rospy.loginfo("Camera mover keyboard disabled (teleop mode active)")
@@ -191,14 +192,14 @@ class ROSBehavior:
         
         while not rospy.is_shutdown() and self.is_running:
             try:
-                # 更新相机平滑移动（只在非 teleop 模式下，避免键盘冲突）
+                # update camera smooth movement (only in non-teleop mode, avoid keyboard conflict)
                 current_time_ros = rospy.Time.now()
                 dt = (current_time_ros - last_update_time).to_sec()
                 last_update_time = current_time_ros
                 if self.camera_mover and self.robot_controller.control_mode != "teleop":
                     self.camera_mover.update(dt)
                 
-                # 根据当前控制模式决定这一帧的 action
+                # decide action for this frame based on current control mode
                 action = self.robot_controller.get_action()
                 
                 # OmniGibson simulation step
@@ -279,20 +280,37 @@ Examples:
         default="symbolic",
         help="Execution mode: 'full' (CuRobo motion planning, GPU intensive) or 'symbolic' (teleport + physics, GPU efficient). Default: full"
     )
+    parser.add_argument(
+        "--trav_map",
+        type=str,
+        default=None,
+        help="Path to custom traversability map (e.g. from generate_trav_map_accurate.py). If set, navigation uses this map instead of scene layout."
+    )
 
     args = parser.parse_args()
     
-    # 解析执行模式
+    # parse execution mode
     from phy_plan.executor.behavior_action_api import ExecutionMode
     execution_mode = ExecutionMode.SYMBOLIC if args.execution_mode == "symbolic" else ExecutionMode.FULL
     
-    env = og.Environment(choose_scene(args.scene, args.scene_file, args.semantic_segmentation))
+    env = og.Environment(choose_scene(
+        args.scene, args.scene_file, args.semantic_segmentation,
+        trav_map_path=args.trav_map, trav_map_resolution=0.01,
+    ))
+    if args.trav_map:
+        try:
+            inject_custom_trav_map(env, args.trav_map, custom_resolution=0.01)
+            print(f"Using custom trav map: {args.trav_map}")
+        except Exception as e:
+            print(f"Failed to inject custom trav map: {e}")
+            raise
     ros_behavior = ROSBehavior(
         env,
         record_rosbag=args.rosbag,
         publish_dsg=args.publish_dsg,
         semantic_segmentation=args.semantic_segmentation,
-        execution_mode=execution_mode
+        execution_mode=execution_mode,
+        scene_name=args.scene
     )
     
     def shutdown():

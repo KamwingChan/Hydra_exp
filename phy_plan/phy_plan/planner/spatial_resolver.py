@@ -165,43 +165,33 @@ class SpatialResolver:
         scene_graph: SceneGraph
     ) -> Optional[str]:
         """
-        Attempt to resolve ambiguous candidates using spatial reasoning
+        DEPRECATED: No longer called by the planning pipeline. Spatial disambiguation
+        is now handled entirely via info_request + LLM reasoning, which can consider
+        multiple dimensions (color, size, etc.) beyond just distance.
         
-        Args:
-            instruction: User instruction containing spatial reference
-            candidates: List of candidate objects (from LLM clarification)
-            scene_graph: Scene graph with position data
-            
-        Returns:
-            Selected object_id if spatial resolution succeeds, None otherwise
+        Kept for backward compatibility and potential utility usage.
         """
-        # Parse spatial reference from instruction
         spatial_ref = self._parse_spatial_reference(instruction)
         if not spatial_ref:
             return None
         
-        # Resolve reference target to scene graph entity
         ref_point = self._get_reference_point(spatial_ref, scene_graph)
         if not ref_point:
             return None
         
-        # Get candidate object IDs
         candidate_ids = [c.get("object_id") for c in candidates if c.get("object_id")]
         if not candidate_ids:
             return None
         
-        # Rank candidates by distance
         ranked = self.rank_by_distance(candidate_ids, ref_point, scene_graph)
         if not ranked:
             return None
         
-        # Select based on reference type
         if spatial_ref.reference_type in ["closest", "nearest", "inside"]:
-            return ranked[0].object_id  # Closest
+            return ranked[0].object_id
         elif spatial_ref.reference_type in ["farthest", "furthest"]:
-            return ranked[-1].object_id  # Farthest
+            return ranked[-1].object_id
         else:
-            # For directional references, use the closest as default
             return ranked[0].object_id
     
     def has_spatial_reference(self, instruction: str) -> bool:

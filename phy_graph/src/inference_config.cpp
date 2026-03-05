@@ -9,6 +9,7 @@ void InferenceConfig::loadFromROS(ros::NodeHandle& nh, const std::string& ns) {
     nh.param<float>(ns + "/image/score_threshold", image.score_threshold, 60.0f);
     nh.param<float>(ns + "/image/high_quality_threshold", image.high_quality_threshold, 70.0f);
     nh.param<std::string>(ns + "/image/projection_mode", image.projection_mode, "mesh_vertices");
+    nh.param<bool>(ns + "/image/draw_bbox_for_vlm", image.draw_bbox_for_vlm, true);
 
     // === 关键帧数据库参数 ===
     nh.param<int>(ns + "/keyframe/max_memory_frames", keyframe.max_memory_frames, 3000);
@@ -40,7 +41,13 @@ void InferenceConfig::loadFromROS(ros::NodeHandle& nh, const std::string& ns) {
     nh.param<bool>(ns + "/occlusion/enable", occlusion.enable, true);
     nh.param<double>(ns + "/occlusion/depth_threshold", occlusion.depth_threshold, 0.1);
     nh.param<int>(ns + "/occlusion/sample_points", occlusion.sample_points, 50);
-    nh.param<int>(ns + "/occlusion/max_score", occlusion.max_score, 15);
+    nh.param<int>(ns + "/occlusion/max_score", occlusion.max_score, 35);
+
+    // === 距离评分参数 ===
+    nh.param<double>(ns + "/distance/ideal_min", distance.ideal_min, 1.0);
+    nh.param<double>(ns + "/distance/ideal_max", distance.ideal_max, 4.0);
+    nh.param<double>(ns + "/distance/max_distance", distance.max_distance, 8.0);
+    nh.param<int>(ns + "/distance/max_score", distance.max_score, 20);
 
     // === 调试参数 ===
     nh.param<bool>(ns + "/debug/save_images", debug.save_images, false);
@@ -49,8 +56,8 @@ void InferenceConfig::loadFromROS(ros::NodeHandle& nh, const std::string& ns) {
 
 void InferenceConfig::print() const {
     ROS_INFO("=== InferenceConfig ===");
-    ROS_INFO("Image: min_crop_size=%d, padding_factor=%.2f, score_threshold=%.1f, high_quality_threshold=%.1f, projection_mode=%s",
-             image.min_crop_size, image.padding_factor, image.score_threshold, image.high_quality_threshold, image.projection_mode.c_str());
+    ROS_INFO("Image: min_crop_size=%d, padding_factor=%.2f, score_threshold=%.1f, high_quality_threshold=%.1f, projection_mode=%s, draw_bbox_for_vlm=%s",
+             image.min_crop_size, image.padding_factor, image.score_threshold, image.high_quality_threshold, image.projection_mode.c_str(), image.draw_bbox_for_vlm ? "true" : "false");
     ROS_INFO("Keyframe: max_memory_frames=%d, min_translation=%.2f, min_rotation=%.2f, time_window=%.1f, frame_skip=%d",
              keyframe.max_memory_frames, keyframe.min_translation, keyframe.min_rotation, keyframe.time_window, keyframe.frame_skip);
     ROS_INFO("Inference: num_workers=%d, max_queue_size=%d, max_defer_count=%d, wait_timeout=%.1f, min_score=%.1f",
@@ -61,6 +68,8 @@ void InferenceConfig::print() const {
              object_maturity.min_age_seconds, object_maturity.enable ? "true" : "false");
     ROS_INFO("Occlusion: enable=%s, depth_threshold=%.2f, sample_points=%d, max_score=%d",
              occlusion.enable ? "true" : "false", occlusion.depth_threshold, occlusion.sample_points, occlusion.max_score);
+    ROS_INFO("Distance: ideal_range=[%.1f, %.1f]m, max_distance=%.1f, max_score=%d",
+             distance.ideal_min, distance.ideal_max, distance.max_distance, distance.max_score);
     ROS_INFO("Debug: save_images=%s, verbose=%s",
              debug.save_images ? "true" : "false", debug.verbose ? "true" : "false");
 }
