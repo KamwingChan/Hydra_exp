@@ -48,15 +48,6 @@ from .metrics import (
     export_comparison_csv,
 )
 
-from .configs import (
-    load_scene_config,
-    get_scene_metadata,
-    get_ground_truth_properties,
-    list_scenes,
-    get_scene_config_path,
-    AVAILABLE_SCENES,
-)
-
 __all__ = [
     # Baselines
     "BaselineType",
@@ -77,11 +68,4 @@ __all__ = [
     "MetricsCollector",
     "compare_baselines",
     "export_comparison_csv",
-    # Configs
-    "load_scene_config",
-    "get_scene_metadata",
-    "get_ground_truth_properties",
-    "list_scenes",
-    "get_scene_config_path",
-    "AVAILABLE_SCENES",
 ]

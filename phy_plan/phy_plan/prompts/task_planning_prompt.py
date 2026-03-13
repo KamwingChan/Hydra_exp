@@ -63,10 +63,11 @@ Three response types. Follow this priority order:
       After the system provides the requested information, continue with your planning.
 
 3. **clarification_needed** – Use AFTER info_request when multiple candidates still satisfy the spatial/location criteria:
-   - 2+ objects at the same location match (e.g., 2 paper bags on the same coffee table) → MUST ask user.
+   - Two or more objects at the same location match (e.g., multiple paper bags on the same coffee table) → MUST ask user.
    - Instruction uses indefinite reference ("a paper bag", "a cup") and multiple match → MUST ask user.
    - Do NOT auto-pick based on description differences unless the instruction explicitly mentions that feature (e.g., "the orange paper bag").
    Also use when info_request is irrelevant (e.g., user preference, truly identical objects with no spatial hint).
+   When returning clarification_needed, ensure question and candidates contain exactly the same object IDs.
 
 **CRITICAL**: Always try info_request BEFORE clarification_needed for spatial/physical queries.
 Do NOT request information if you can already make a decision with the available data.
@@ -126,228 +127,119 @@ When clarification is needed:
 8. If you receive [CONSTRAINT FEEDBACK], the previous plan was physically infeasible. Generate an alternative plan avoiding the problematic action.
 9. If you receive [EXECUTION FAILURE], the previous action failed during execution. Replan from the current state using the updated scene graph provided. Avoid repeating the failed action if possible.
 10. If you receive [SCENE CHANGE], objects relevant to your plan moved or disappeared. Replan using the updated scene graph. Check that your target objects still exist and are accessible.
+11. **SPATIAL REASONING — COORDINATES FIRST**: When determining whether an object is ON a surface
+    (e.g., "on the coffee table"), use 3D coordinates as the PRIMARY source of truth:
+    - An object is considered ON a surface if its XY position is within ~0.5m of the surface center
+      AND its Z is above the surface's Z centroid.
+    - Apply this check symmetrically to ALL candidates — do NOT apply it to some and skip others.
+    - Object descriptions (e.g., "on the floor", "on a wooden table") are generated from CROPPED
+      images and are often UNRELIABLE for spatial judgments. Treat them as LOW-PRIORITY hints only.
+    - When description contradicts coordinates, TRUST COORDINATES over description.
+    - Example: surface at [-0.48, -1.22, 0.28], object at [-0.48, -1.63, 0.60] → XY dist=0.41m,
+      Z=0.60 > 0.28 → candidate ON surface, regardless of description saying "on the floor".
+12. **STRICT CLARIFICATION CONSISTENCY**: When clarification_needed=true, candidates must include ALL and ONLY objects that satisfy your own matching criteria (never default to 2). If reasoning finds N matches, output exactly N candidates, and list the same object IDs in question.
 """
 # Few-shot Example
 FEW_SHOT_EXAMPLE = """
-## Example 1: Clear Instruction (Single Object)
+## Example 1: Direct Plan (Unambiguous)
 
 **Scene Graph (compact):**
 {
   "rooms": [
-    {"room_id": "R(0)", "category": "SmallRoom", "object_ids": ["O(5)"]},
-    {"room_id": "R(1)", "category": "ConferenceRoom", "object_ids": ["O(10)", "O(11)", "O(12)"]}
+    {"room_id": "R(0)", "category": "room_a", "object_ids": ["O(1)"]},
+    {"room_id": "R(1)", "category": "room_b", "object_ids": ["O(2)"]}
   ],
   "objects": [
-    {"node_id": "O(5)", "category": "coffee_cup", "room_id": "R(0)", "has_physics": true},
-    {"node_id": "O(10)", "category": "swivel_chair", "room_id": "R(1)", "has_physics": true},
-    {"node_id": "O(11)", "category": "swivel_chair", "room_id": "R(1)", "has_physics": true},
-    {"node_id": "O(12)", "category": "conference_table", "room_id": "R(1)", "has_physics": true}
+    {"node_id": "O(1)", "category": "item_a", "room_id": "R(0)", "has_physics": true},
+    {"node_id": "O(2)", "category": "surface_a", "room_id": "R(1)", "has_physics": true}
   ]
 }
 
-**Instruction:** Go to the small room, pick up the coffee cup, bring it to the conference room, and arrange the chairs.
+**Instruction:** Move item_a to surface_a.
 
 **Output:**
 {
     "clarification_needed": false,
     "question": "",
     "candidates": [],
-    "chain_of_thought": "coffee_cup O(5) in R(0), no ambiguity. After picking O(5), robot is NOT near O(12), so must navigate_to O(12) before placing. Arrange swivel_chairs in R(1).",
+    "chain_of_thought": "Single item_a and single surface_a. No ambiguity.",
     "plan": [
         {"action": "navigate", "params": {"room_id": "R(0)"}},
-        {"action": "navigate_to", "params": {"object_id": "O(5)"}},
-        {"action": "pick", "params": {"object_id": "O(5)"}},
+        {"action": "navigate_to", "params": {"object_id": "O(1)"}},
+        {"action": "pick", "params": {"object_id": "O(1)"}},
         {"action": "navigate", "params": {"room_id": "R(1)"}},
-        {"action": "navigate_to", "params": {"object_id": "O(12)"}},
-        {"action": "place", "params": {"object_id": "O(5)", "surface_id": "O(12)"}},
-        {"action": "arrange", "params": {"object_category": "swivel_chair", "room_id": "R(1)"}}
+        {"action": "navigate_to", "params": {"object_id": "O(2)"}},
+        {"action": "place", "params": {"object_id": "O(1)", "surface_id": "O(2)"}}
     ]
 }
 
-## Example 2: Ambiguous Instruction (Need Clarification)
+## Example 2: info_request then clarification_needed
 
 **Scene Graph (compact):**
 {
   "rooms": [
-    {"room_id": "R(0)", "category": "Kitchen", "object_ids": ["O(5)", "O(6)"]},
-    {"room_id": "R(1)", "category": "DiningRoom", "object_ids": ["O(8)"]},
-    {"room_id": "R(2)", "category": "ConferenceRoom", "object_ids": ["O(12)"]}
+    {"room_id": "R(0)", "category": "room_main", "object_ids": ["O(3)", "O(4)", "O(5)", "O(6)", "O(7)"]}
   ],
   "objects": [
-    {"node_id": "O(5)", "category": "coffee_cup", "room_id": "R(0)", "has_physics": true},
-    {"node_id": "O(6)", "category": "table", "room_id": "R(0)", "has_physics": true},
-    {"node_id": "O(8)", "category": "water_cup", "room_id": "R(1)", "has_physics": true},
-    {"node_id": "O(12)", "category": "conference_table", "room_id": "R(2)", "has_physics": true}
+    {"node_id": "O(3)", "category": "item_a", "room_id": "R(0)", "has_physics": true},
+    {"node_id": "O(4)", "category": "item_a", "room_id": "R(0)", "has_physics": true},
+    {"node_id": "O(5)", "category": "item_a", "room_id": "R(0)", "has_physics": true},
+    {"node_id": "O(6)", "category": "surface_a", "room_id": "R(0)", "has_physics": true},
+    {"node_id": "O(7)", "category": "reference_a", "room_id": "R(0)", "has_physics": true}
   ]
 }
 
-**Instruction:** Pick up the cup and bring it to the conference room.
+**Instruction:** Pick up an item_a from the surface_a next to reference_a.
 
-**Output:**
-{
-    "clarification_needed": true,
-    "question": "I found 2 cups in the scene. Which one do you want?",
-    "candidates": [
-        {"object_id": "O(5)", "category": "coffee_cup", "room_id": "R(0)"},
-        {"object_id": "O(8)", "category": "water_cup", "room_id": "R(1)"}
-    ],
-    "chain_of_thought": "2 cups: O(5) coffee_cup in R(0), O(8) water_cup in R(1). No spatial or physical hint to disambiguate. Must ask user.",
-    "plan": []
-}
-
-## Example 3: Multiple Same-Category Objects → info_request → Plan
-
-**Scene Graph (compact):**
-{
-  "rooms": [
-    {"room_id": "R(3)", "category": "ConferenceRoom", "object_ids": ["O(18)"]},
-    {"room_id": "R(4)", "category": "Office", "object_ids": ["O(15)", "O(16)", "O(20)"]}
-  ],
-  "objects": [
-    {"node_id": "O(18)", "category": "coffee_cup", "room_id": "R(3)", "has_physics": true},
-    {"node_id": "O(15)", "category": "conference_table", "room_id": "R(4)", "has_physics": true},
-    {"node_id": "O(16)", "category": "conference_table", "room_id": "R(4)", "has_physics": true},
-    {"node_id": "O(20)", "category": "desk", "room_id": "R(4)", "has_physics": true}
-  ]
-}
-
-**Instruction:** Take the coffee cup from the conference room and place it on the conference table in the office that is near the conference room.
-
-**Output (Step 1 - Request Info):**
+**Output (Step 1):**
 {
     "info_request": true,
-    "requested_objects": ["O(15)", "O(16)"],
+    "requested_objects": ["O(3)", "O(4)", "O(5)", "O(6)", "O(7)"],
     "request_type": "position",
-    "reason": "2 conference_tables in R(4): O(15) and O(16). Instruction says 'near the conference room' — need positions to determine which is closer to R(3). MUST NOT guess.",
+    "reason": "Need coordinates to determine which item_a objects are on surface_a next to reference_a.",
     "plan": []
 }
 
-**System provides:**
-[System Info: Requested Object Details]
-- conference_table (O(15)) Position: [2.00, 3.00, 0.80] Room: R(4), Description: A large rectangular wooden conference table with a dark brown surface ; on the floor, near the entrance of the office ; serves as the main meeting surface in the room.
-- conference_table (O(16)) Position: [8.00, 7.00, 0.80] Room: R(4), Description: A rectangular wooden conference table with a light finish ; on the floor, near the window on the far side of the office ; a secondary meeting surface.
-- Room ConferenceRoom (R(3)) centroid: [1.50, 4.00, 0.00]
-- Room Office (R(4)) centroid: [5.00, 5.00, 0.00]
+**System provides:** all requested positions.
 
-**Output (Step 2 - Generate Plan):**
+**Output (Step 2):**
+{
+    "clarification_needed": true,
+    "question": "I found the following item_a objects on the target surface: O(3), O(4), O(5). Which one do you want?",
+    "candidates": [
+        {"object_id": "O(3)", "category": "item_a", "room_id": "R(0)"},
+        {"object_id": "O(4)", "category": "item_a", "room_id": "R(0)"},
+        {"object_id": "O(5)", "category": "item_a", "room_id": "R(0)"}
+    ],
+    "chain_of_thought": "After coordinate check, O(3), O(4), O(5) match. clarification_needed uses all matching IDs and question IDs match candidates exactly.",
+    "plan": []
+}
+
+## Example 3: Container Access
+
+**Scene Graph (compact):**
+{
+  "rooms": [
+    {"room_id": "R(2)", "category": "room_c", "object_ids": ["O(8)"]}
+  ],
+  "objects": [
+    {"node_id": "O(8)", "category": "container_a", "room_id": "R(2)", "has_physics": true}
+  ]
+}
+
+**Instruction:** Get the bottle inside container_a.
+
+**Output:**
 {
     "clarification_needed": false,
     "question": "",
     "candidates": [],
-    "chain_of_thought": "O(15) at [2.0,3.0] is ~1.1m from R(3) centroid [1.5,4.0]. O(16) at [8.0,7.0] is ~7.2m. O(15) is closer. Pick O(18) from R(3), place on O(15) in R(4).",
+    "chain_of_thought": "Target is inside a container, so open first and wait for scene update.",
     "plan": [
-        {"action": "navigate", "params": {"room_id": "R(3)"}},
-        {"action": "navigate_to", "params": {"object_id": "O(18)"}},
-        {"action": "pick", "params": {"object_id": "O(18)"}},
-        {"action": "navigate", "params": {"room_id": "R(4)"}},
-        {"action": "navigate_to", "params": {"object_id": "O(15)"}},
-        {"action": "place", "params": {"object_id": "O(18)", "surface_id": "O(15)"}}
+        {"action": "navigate", "params": {"room_id": "R(2)"}},
+        {"action": "navigate_to", "params": {"object_id": "O(8)"}},
+        {"action": "open", "params": {"object_id": "O(8)"}}
     ]
-}
-
-## Example 4: info_request Narrows Candidates But Multiple Remain → clarification_needed
-
-**Scene Graph (compact):**
-{
-  "rooms": [
-    {"room_id": "R(0)", "category": "LivingRoom", "object_ids": ["O(5)", "O(6)", "O(7)", "O(10)", "O(11)"]}
-  ],
-  "objects": [
-    {"node_id": "O(5)", "category": "paper_bag", "room_id": "R(0)", "has_physics": true},
-    {"node_id": "O(6)", "category": "paper_bag", "room_id": "R(0)", "has_physics": true},
-    {"node_id": "O(7)", "category": "paper_bag", "room_id": "R(0)", "has_physics": true},
-    {"node_id": "O(10)", "category": "coffee_table", "room_id": "R(0)", "has_physics": true},
-    {"node_id": "O(11)", "category": "sofa", "room_id": "R(0)", "has_physics": true}
-  ]
-}
-
-**Instruction:** Pick up a paper bag from the coffee table next to the sofa.
-
-**Output (Step 1 - Request Info):**
-{
-    "info_request": true,
-    "requested_objects": ["O(5)", "O(6)", "O(7)", "O(10)", "O(11)"],
-    "request_type": "position",
-    "reason": "3 paper_bags in R(0). Need positions to determine which are on coffee_table O(10) next to sofa O(11).",
-    "plan": []
-}
-
-**System provides:**
-[System Info: Requested Object Details]
-- paper_bag (O(5)) Position: [1.20, 2.30, 0.60] Room: R(0), Description: An orange-brown paper bag with a rectangular shape, made of crumpled paper ; on the coffee table, near a white paper bag ; commonly used for carrying items.
-- paper_bag (O(6)) Position: [1.50, 2.35, 0.60] Room: R(0), Description: A white paper bag with a rectangular shape, slightly smaller ; on the coffee table, near an orange-brown paper bag ; likely contains purchased items.
-- paper_bag (O(7)) Position: [4.00, 1.00, 0.30] Room: R(0), Description: A brown paper bag on the floor ; on the floor, near a bookshelf ; appears to be set aside.
-- coffee_table (O(10)) Position: [1.35, 2.30, 0.30] Room: R(0)
-- sofa (O(11)) Position: [1.30, 3.00, 0.40] Room: R(0)
-- Room LivingRoom (R(0)) centroid: [2.50, 2.00, 0.00]
-
-**Output (Step 2 - Two bags on the table, ask user):**
-{
-    "clarification_needed": true,
-    "question": "I found 2 paper bags on the coffee table next to the sofa: O(5) and O(6). Which one do you want?",
-    "candidates": [
-        {"object_id": "O(5)", "category": "paper_bag", "room_id": "R(0)"},
-        {"object_id": "O(6)", "category": "paper_bag", "room_id": "R(0)"}
-    ],
-    "chain_of_thought": "Coffee table O(10) at [1.35,2.3] is 0.7m from sofa O(11) — it is next to the sofa. O(5) at [1.2,2.3] and O(6) at [1.5,2.35] are both on O(10). O(7) at [4.0,1.0] is far away on the floor. Instruction says 'a paper bag' (indefinite) — 2 bags match, must ask user.",
-    "plan": []
-}
-
-## Example 5: Container Access (Open Before Pick)
-
-**Scene Graph (compact):**
-{
-  "rooms": [
-    {"room_id": "R(0)", "category": "Kitchen", "object_ids": ["O(10)", "O(11)"]}
-  ],
-  "objects": [
-    {"node_id": "O(10)", "category": "fridge", "room_id": "R(0)", "has_physics": true},
-    {"node_id": "O(11)", "category": "table", "room_id": "R(0)", "has_physics": true}
-  ]
-}
-
-**Instruction:** 拿冰箱里的水瓶
-
-**Output:**
-{
-    "clarification_needed": false,
-    "question": "",
-    "candidates": [],
-    "chain_of_thought": "Fridge O(10) is a container. Open it first; perception will detect interior objects and update scene graph.",
-    "plan": [
-        {"action": "navigate", "params": {"room_id": "R(0)"}},
-        {"action": "navigate_to", "params": {"object_id": "O(10)"}},
-        {"action": "open", "params": {"object_id": "O(10)"}}
-    ],
-    "needs_scene_update": true,
-    "continuation_hint": "After scene update, pick the water bottle from inside the fridge"
-}
-
-## Example 6: Replanning After Physics Constraint Feedback
-
-**Scene Graph (compact):**
-{
-  "rooms": [
-    {"room_id": "R(0)", "category": "LivingRoom", "object_ids": ["O(5)", "O(10)"]}
-  ],
-  "objects": [
-    {"node_id": "O(5)", "category": "cup", "room_id": "R(0)", "has_physics": true},
-    {"node_id": "O(10)", "category": "sofa", "room_id": "R(0)", "has_physics": true}
-  ]
-}
-
-**Instruction:** Pick up the sofa and move it to the corner.
-
-[CONSTRAINT FEEDBACK]
-The previous plan was rejected: Object sofa O(10) is too heavy (weight_level=2, estimated 30-50kg) for the robot to pick up. The robot can only handle weight_level <= 1.
-
-**Output:**
-{
-    "clarification_needed": false,
-    "question": "",
-    "candidates": [],
-    "chain_of_thought": "Sofa O(10) too heavy (weight_level=2). Cannot pick. Task infeasible, suggest alternative to user.",
-    "plan": []
 }
 """
 

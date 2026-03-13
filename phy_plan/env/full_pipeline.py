@@ -52,7 +52,10 @@ gm.DEFAULT_VIEWER_HEIGHT = 480
 class ExperimentBehavior:
     """Main class for ExperimentBehavior."""
     
-    def __init__(self, env, scene_name,record_rosbag=False, publish_dsg=False, semantic_segmentation=True, execution_mode=None, scene_graph_file=None, online_mode=False):
+    def __init__(self, env, scene_name, record_rosbag=False, publish_dsg=False,
+                 semantic_segmentation=True, execution_mode=None,
+                 scene_graph_file=None, online_mode=False,
+                 exp_mode=False, open_loop=False):
         """
         Initialize ExperimentBehavior.
         """
@@ -66,6 +69,26 @@ class ExperimentBehavior:
         self.scene_name = scene_name
         self.scene_graph_file = scene_graph_file
         self.online_mode = online_mode
+        self.exp_mode = exp_mode
+        self.open_loop = open_loop
+
+        # Experiment metrics
+        self._collector = None
+        self._planning_start_time = 0.0
+        self._execution_start_time = 0.0
+        self._current_task_id = ""
+        self._task_counter = 0
+        if self.exp_mode:
+            import time as _time
+            from datetime import datetime as _dt
+            from phy_plan.experiments.metrics import MetricsCollector
+            baseline_label = "open_loop" if self.open_loop else "full"
+            ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+            self._collector = MetricsCollector(
+                experiment_name=f"behavior_{baseline_label}_{ts}",
+                baseline=baseline_label,
+            )
+            rospy.loginfo(f"[ExpMode] MetricsCollector created (baseline={baseline_label})")
         # Robot and sensor setup
         self.robot = self.env.robots[0]
         pos, orn = self.robot.get_position_orientation()
@@ -112,6 +135,9 @@ class ExperimentBehavior:
         
         # Register pipeline factory for lazy init (P key triggers creation)
         self._register_pipeline_factory()
+        
+        # Register T key for dynamic event (Task 4: move game_console)
+        self._register_dynamic_event_key()
     
     def _setup_ros(self):
         """Setup ROS node, publishers, and subscribers."""
@@ -203,14 +229,13 @@ class ExperimentBehavior:
         """
         def _create_pipeline():
             """Factory: creates the full pipeline chain on first P key press."""
+            import time as _time
             from phy_plan.input.phy_graph_subscriber import SceneGraphSubscriber
             from phy_plan.planner.llm_planner_pipeline import LLMPlannerPipeline
             from phy_plan.planner.dynamic_planner import DynamicPlannerPipeline
             from phy_plan.core.pipeline import PhyPlanPipeline
             
             rospy.loginfo("[Pipeline Factory] Creating full planning pipeline...")
-            
-            # 1. Scene graph source (ROS real-time subscription)
             
             if not self.online_mode and self.scene_graph_file is not None:
                 subscriber = SceneGraphSubscriber.from_file(
@@ -219,8 +244,6 @@ class ExperimentBehavior:
             else:
                 subscriber = SceneGraphSubscriber(topic="/phy_graph/scene_graph_full")
             
-            # 2. LLM planning pipeline (interactive: info_request,
-            #    spatial resolution, physics validation, user confirmation)
             llm_pipeline = LLMPlannerPipeline(
                 model="gpt-4o",
                 subscriber=subscriber,
@@ -228,23 +251,85 @@ class ExperimentBehavior:
                 enable_spatial_resolver=True
             )
             
-            # 3. Dynamic planning pipeline (replanning + change detection)
+            dynamic_kwargs = {}
+            if self.open_loop:
+                dynamic_kwargs["max_replan_per_task"] = 0
+                rospy.loginfo("[Pipeline Factory] Open-loop mode: replanning disabled")
+            
             dynamic_pipeline = DynamicPlannerPipeline(
                 pipeline=llm_pipeline,
                 subscriber=subscriber,
-                executor=None,  # PhyPlanPipeline handles execution
+                executor=None,
+                **dynamic_kwargs,
             )
             
-            # 4. Non-blocking pipeline adapter
             phy_pipeline = PhyPlanPipeline(
                 primitive_controller=self.robot_controller.primitive_controller,
                 dynamic_pipeline=dynamic_pipeline
             )
             
+            # Wrap _on_task_complete for experiment metrics
+            if self.exp_mode and self._collector is not None:
+                _orig_on_task_complete = phy_pipeline._on_task_complete
+                _orig_run = phy_pipeline.run
+
+                def _wrapped_run(instruction=None, debug=True):
+                    self._task_counter += 1
+                    self._current_task_id = f"B{self._task_counter}"
+                    task_name = instruction or "behavior_task"
+                    self._collector.start_task(self._current_task_id, task_name)
+                    self._planning_start_time = _time.time()
+
+                    # Reset token usage
+                    agent = getattr(llm_pipeline, 'agent', None)
+                    if agent:
+                        agent.reset_token_usage()
+
+                    self._collector.start_planning()
+                    result = _orig_run(instruction=instruction, debug=debug)
+                    self._collector.end_planning()
+
+                    # Record plan result
+                    if phy_pipeline.current_task is not None:
+                        from phy_plan.core.task import TaskSequence
+                        self._collector.record_plan_result(phy_pipeline.current_task)
+
+                    # Record token usage
+                    if agent:
+                        self._collector.record_token_usage(agent.get_token_usage())
+
+                    self._execution_start_time = _time.time()
+                    return result
+
+                def _wrapped_on_task_complete(success, error):
+                    import time as _t
+                    exec_time = _t.time() - self._execution_start_time
+                    _orig_on_task_complete(success, error)
+
+                    if self._collector and self._collector._current_task:
+                        self._collector._current_task.execution_time = exec_time
+                        # Replan count from dynamic pipeline
+                        if hasattr(dynamic_pipeline, '_replan_count'):
+                            self._collector._current_task.replan_count = dynamic_pipeline._replan_count
+                            if dynamic_pipeline._replan_count > 0 and success:
+                                self._collector._current_task.recovery_success = True
+
+                        print("\n[ExpMode] Task execution complete. Starting human judgment...")
+                        self._collector.prompt_human_judgment()
+                        task_metrics = self._collector.end_task()
+                        print(f"[ExpMode] Task {task_metrics.task_id} recorded: "
+                              f"success={task_metrics.success}, "
+                              f"planning_time={task_metrics.planning_time:.2f}s, "
+                              f"execution_time={task_metrics.execution_time:.2f}s")
+
+                phy_pipeline.run = _wrapped_run
+                phy_pipeline._on_task_complete = _wrapped_on_task_complete
+            
             rospy.loginfo("[Pipeline Factory] Pipeline ready:")
             rospy.loginfo("  - SceneGraphSubscriber listening on /phy_graph/scene_graph_full")
-            rospy.loginfo("  - LLMPlannerPipeline (gpt-4o-mini, physics+spatial)")
-            rospy.loginfo("  - DynamicPlannerPipeline (replanning enabled)")
+            rospy.loginfo("  - LLMPlannerPipeline (gpt-4o, physics+spatial)")
+            replan_status = "disabled (open-loop)" if self.open_loop else "enabled"
+            rospy.loginfo(f"  - DynamicPlannerPipeline (replanning {replan_status})")
             
             return phy_pipeline
         
@@ -261,7 +346,44 @@ class ExperimentBehavior:
         rospy.loginfo("[ROSBehavior] Pipeline factory registered:")
         rospy.loginfo("  P key -> lazy-init pipeline + interactive planning")
         rospy.loginfo("  G key -> hardcoded experiment (no pipeline needed)")
+        if self.exp_mode:
+            rospy.loginfo("  [ExpMode] Metrics collection enabled")
     
+    def _register_dynamic_event_key(self):
+        """Register T key callback for triggering dynamic scene events.
+        
+        Used for Task 4: move game_console to a new position during execution.
+        Position is a placeholder until determined experimentally.
+        """
+        def _on_t_key_pressed():
+            target_name = "game_console"
+            # Placeholder position — update once determined
+            new_pos = [0.0, 0.0, 0.5]
+            rospy.loginfo(f"[T key] Dynamic event: moving '{target_name}' to {new_pos}")
+            try:
+                scene = self.env.scene
+                target_obj = None
+                for obj in scene.objects:
+                    if target_name in obj.name:
+                        target_obj = obj
+                        break
+                if target_obj is not None:
+                    target_obj.set_position_orientation(position=new_pos)
+                    rospy.loginfo(f"[T key] Moved '{target_obj.name}' to {new_pos}")
+                else:
+                    rospy.logwarn(f"[T key] Object '{target_name}' not found in scene")
+            except Exception as e:
+                rospy.logerr(f"[T key] Failed to move object: {e}")
+
+        try:
+            KeyboardEventHandler.add_keyboard_callback(
+                key=lazy.carb.input.KeyboardInput.T,
+                callback_fn=_on_t_key_pressed,
+            )
+            rospy.loginfo("[ROSBehavior] T key registered: trigger dynamic event (move game_console)")
+        except Exception as e:
+            rospy.logwarn(f"[ROSBehavior] Failed to register T key: {e}")
+
     def run(self):
         """Main loop: execute simulation step and publish data."""
         rospy.loginfo("ROSBehavior is running. Press ESC to quit.")
@@ -311,6 +433,16 @@ class ExperimentBehavior:
         self.is_running = False
         if self.rosbag_manager:
             self.rosbag_manager.close()
+        
+        if self.exp_mode and self._collector and self._collector.experiment.task_metrics:
+            from pathlib import Path
+            output_dir = Path(__file__).parent / "exp_results"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            exp_name = self._collector.experiment.experiment_name
+            self._collector.export_json(str(output_dir / f"{exp_name}.json"))
+            self._collector.export_csv(str(output_dir / f"{exp_name}.csv"))
+            self._collector.print_summary()
+            rospy.loginfo(f"[ExpMode] Results saved to {output_dir}")
 
 
 def main():
@@ -373,6 +505,16 @@ Examples:
         default=None,
         help="Path to custom traversability map (e.g. from generate_trav_map_accurate.py). If set, navigation uses this map instead of scene layout."
     )
+    parser.add_argument(
+        "--exp_mode",
+        action="store_true",
+        help="Enable experiment mode: metrics collection + human judgment after each P key task"
+    )
+    parser.add_argument(
+        "--open_loop",
+        action="store_true",
+        help="Disable dynamic replanning (open-loop baseline, only effective with --exp_mode)"
+    )
 
     args = parser.parse_args()
     
@@ -399,7 +541,9 @@ Examples:
         semantic_segmentation=args.semantic_segmentation,
         execution_mode=execution_mode,
         scene_graph_file=args.scene_graph_file,
-        online_mode=args.online_mode
+        online_mode=args.online_mode,
+        exp_mode=args.exp_mode,
+        open_loop=args.open_loop,
     )
     
     def shutdown():

@@ -34,7 +34,7 @@ except ImportError:
 # 这些是场景结构或机器人本身，不是可操作的物体
 EXCLUDED_CATEGORIES: Set[str] = {
     "walls", "floors", "ceilings", "wall", "floor", "ceiling",
-    "agent", "robot", "fetch", "tiago",
+    "agent", "robot", "fetch", "tiago", "picture", "plant", "light"
 }
 
 
@@ -123,9 +123,12 @@ class DsgPublisher:
         Args:
             og_scene: OmniGibson 场景对象 (env.scene)
             timestamp: 可选的时间戳，默认使用当前时间
+            
+        Returns:
+            发布的 DsgUpdate 消息，供 rosbag 等录制使用；异常时返回 None
         """
         G = self._build_dsg(og_scene)
-        self._publish(G, timestamp)
+        return self._publish(G, timestamp)
     
     def get_gt_physics_cache(self) -> Dict[str, dict]:
         """
@@ -152,10 +155,11 @@ class DsgPublisher:
         self._obj_name_to_node_id.clear()
         
         # 收集房间信息（如果有）
-        room_objects: Dict[str, List[str]] = {}  # room_name -> [obj_name, ...]
+        room_objects: Dict[str, List[str]] = {}   # room_name -> [obj_name, ...]
+        room_positions: Dict[str, List[np.ndarray]] = {}  # room_name -> [obj_pos, ...]
         
         # 添加所有对象节点
-        for obj in og_scene.objects:
+        for obj in sorted(og_scene.objects, key=lambda o: getattr(o, 'name', '')):
             if not should_include_object(obj):
                 continue
             
@@ -176,15 +180,33 @@ class DsgPublisher:
                 in_rooms = obj.in_rooms if obj.in_rooms else []
                 if isinstance(in_rooms, str):
                     in_rooms = [in_rooms] if in_rooms else []
+
+                # 用对象中心位置估计房间中心点
+                obj_pos_np = None
+                try:
+                    obj_pos, _ = obj.get_position_orientation()
+                    obj_pos_np = obj_pos.cpu().numpy() if hasattr(obj_pos, 'cpu') else np.array(obj_pos)
+                except Exception:
+                    obj_pos_np = None
+
                 for room_name in in_rooms:
                     if room_name not in room_objects:
                         room_objects[room_name] = []
+                    if room_name not in room_positions:
+                        room_positions[room_name] = []
                     room_objects[room_name].append(obj.name)
+                    if obj_pos_np is not None:
+                        room_positions[room_name].append(obj_pos_np)
         
         # 添加房间节点和边
         if self.include_rooms and room_objects:
             for room_name, obj_names in room_objects.items():
-                room_node_id = self._add_room_node(G, room_name, obj_names)
+                centroid = None
+                positions = room_positions.get(room_name, [])
+                if positions:
+                    centroid = np.mean(np.vstack(positions), axis=0).tolist()
+
+                room_node_id = self._add_room_node(G, room_name, obj_names, centroid)
                 
                 # 添加 object -> room 边
                 for obj_name in obj_names:
@@ -268,7 +290,13 @@ class DsgPublisher:
         
         return node_id
     
-    def _add_room_node(self, G: "dsg.DynamicSceneGraph", room_name: str, obj_names: List[str]) -> int:
+    def _add_room_node(
+        self,
+        G: "dsg.DynamicSceneGraph",
+        room_name: str,
+        obj_names: List[str],
+        centroid: Optional[List[float]] = None
+    ) -> int:
         """
         添加 Room 节点
         
@@ -276,6 +304,7 @@ class DsgPublisher:
             G: DynamicSceneGraph
             room_name: 房间名称
             obj_names: 房间内的对象名称列表
+            centroid: 房间中心点 [x, y, z]
             
         Returns:
             节点 ID
@@ -284,6 +313,9 @@ class DsgPublisher:
         attrs.name = room_name
         # NOTE: semantic_label 对 phy_graph 不重要，统一用 0
         attrs.semantic_label = 0
+
+        if centroid is not None and len(centroid) == 3:
+            attrs.position = np.array(centroid, dtype=np.float64)
         
         # 时间戳
         if ROS_AVAILABLE:
@@ -309,6 +341,9 @@ class DsgPublisher:
         Args:
             G: 要发布的 DynamicSceneGraph
             timestamp: 可选的时间戳
+            
+        Returns:
+            发布的 DsgUpdate 消息
         """
         msg = hydra_msgs.msg.DsgUpdate()
         msg.header.stamp = timestamp if timestamp else rospy.Time.now()
@@ -318,6 +353,7 @@ class DsgPublisher:
         msg.sequence_number = 0
         
         self.pub.publish(msg)
+        return msg
 
 
 def mass_to_weight_level(mass_kg: float) -> int:

@@ -328,11 +328,17 @@ def create_arrangement_task_with_hungarian(
         chair = item["chair"]
         target = item["target"]
         table_id = item["table_id"]
-        
+
+        # 在描述中包含目标坐标，便于调试查看
+        if len(target) >= 3:
+            coord_str = f"({target[0]:.2f}, {target[1]:.2f}, {target[2]:.2f})"
+        else:
+            coord_str = f"({target[0]:.2f}, {target[1]:.2f})"
+
         task_seq.add_move_object(
             object_id=chair.node_id,
             target_position=Position.from_list(target),
-            description=f"Move {chair.node_id} to position near {table_id}"
+            description=f"Move {chair.node_id} to {coord_str} near {table_id}"
         )
     
     task_seq.metadata["total_assignment_cost"] = total_assign_cost

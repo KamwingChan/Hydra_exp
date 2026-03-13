@@ -60,7 +60,54 @@ class LLMAgent:
         
         # multi-round conversation history
         self.messages = []
-    
+        # token usage accumulation (for metrics)
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.llm_call_count = 0
+        # system prompt token estimates
+        self.system_prompt_tokens_once = 0
+        self.system_prompt_tokens_total_est = 0
+
+    @staticmethod
+    def _estimate_text_tokens(text: str) -> int:
+        """
+        Lightweight token estimate for reporting.
+        Uses ~4 chars/token heuristic.
+        """
+        if not text:
+            return 0
+        return max(1, (len(text) + 3) // 4)
+
+    def get_token_usage(self) -> dict:
+        """Return accumulated token usage for current task."""
+        # If system prompt is cached after the first request, this approximates
+        # the effective prompt tokens paid for repeated calls.
+        repeated_system = max(
+            0, self.system_prompt_tokens_total_est - self.system_prompt_tokens_once
+        )
+        effective_prompt_after_cache_est = max(
+            0, self.total_prompt_tokens - repeated_system
+        )
+        return {
+            "prompt_tokens": self.total_prompt_tokens,
+            "prompt_tokens_total": self.total_prompt_tokens,
+            "completion_tokens": self.total_completion_tokens,
+            "completion_tokens_total": self.total_completion_tokens,
+            "total_tokens": self.total_prompt_tokens + self.total_completion_tokens,
+            "llm_call_count": self.llm_call_count,
+            "system_prompt_tokens_once": self.system_prompt_tokens_once,
+            "system_prompt_tokens_total_est": self.system_prompt_tokens_total_est,
+            "effective_prompt_tokens_after_cache_est": effective_prompt_after_cache_est,
+        }
+
+    def reset_token_usage(self) -> None:
+        """Reset token counters (call before each task)."""
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.llm_call_count = 0
+        self.system_prompt_tokens_once = 0
+        self.system_prompt_tokens_total_est = 0
+
     @property
     def name(self) -> str:
         return f"LLMAgent({self.model})"
@@ -79,6 +126,10 @@ class LLMAgent:
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt}
         ]
+        system_est = self._estimate_text_tokens(system_content)
+        self.system_prompt_tokens_total_est += system_est
+        if self.system_prompt_tokens_once == 0:
+            self.system_prompt_tokens_once = system_est
         
         import json
         import httpx._content
@@ -109,15 +160,20 @@ class LLMAgent:
         finally:
             httpx._content.json_dumps = _original_dumps
         
+        # accumulate token usage
+        if getattr(response, "usage", None):
+            self.total_prompt_tokens += response.usage.prompt_tokens
+            self.total_completion_tokens += response.usage.completion_tokens
+            self.llm_call_count += 1
         # check if response is truncated due to length limit
         finish_reason = response.choices[0].finish_reason
         if finish_reason == "length":
             print(f"[WARNING] LLM response was truncated due to max_tokens limit ({max_tokens})")
             print(f"[WARNING] Consider increasing max_tokens or simplifying the prompt")
             # still return response, but record warning
-        
+
         return response.choices[0].message.content
-    
+
     def init_conversation(self, system_content: str) -> None:
         """
         initialize conversation
@@ -130,6 +186,9 @@ class LLMAgent:
         self.messages = [
             {"role": "system", "content": system_content}
         ]
+        system_est = self._estimate_text_tokens(system_content)
+        self.system_prompt_tokens_once = system_est
+        self.system_prompt_tokens_total_est = 0
     
     def chat(
         self,
@@ -142,6 +201,9 @@ class LLMAgent:
         """
         # add user message
         self.messages.append({"role": "user", "content": user_prompt})
+        # In chat mode, system message is re-sent every turn.
+        if self.system_prompt_tokens_once > 0:
+            self.system_prompt_tokens_total_est += self.system_prompt_tokens_once
         
         import json
         import httpx._content
@@ -181,14 +243,19 @@ class LLMAgent:
             print(f"[WARNING] Partial response may cause JSON parsing errors")
             # still return response, but record warning
         
+        # accumulate token usage
+        if getattr(response, "usage", None):
+            self.total_prompt_tokens += response.usage.prompt_tokens
+            self.total_completion_tokens += response.usage.completion_tokens
+            self.llm_call_count += 1
         # get response
         assistant_message = response.choices[0].message.content
-        
+
         # add assistant message to history
         self.messages.append({"role": "assistant", "content": assistant_message})
-        
+
         return assistant_message
-    
+
     def reset(self) -> None:
         """clear conversation history"""
         self.messages = []

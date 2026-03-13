@@ -556,9 +556,30 @@ class LLMPlanner:
         Returns:
             Formatted string with object details
         """
-        info_lines = ["[System Info: Requested Object Details]"]
+        info_lines = [
+            "[System Info: Requested Object Details]",
+            "[IMPORTANT] Use coordinates as PRIMARY source for spatial reasoning (e.g., which objects are ON a surface).",
+            "[IMPORTANT] Object descriptions are from cropped images and may be inaccurate about spatial context — treat as secondary hints only. When description conflicts with coordinates, trust coordinates.",
+            "",
+        ]
         
         for obj_id in object_ids:
+            # Support room references explicitly (e.g., "R(2)").
+            if isinstance(obj_id, str) and obj_id.startswith("R("):
+                room = scene_graph.get_room(obj_id)
+                if not room:
+                    info_lines.append(f"- {obj_id}: not found in scene graph")
+                    continue
+
+                room_line = f"- Room {room.category} ({room.room_id})"
+                if request_type in ["position", "both"] and room.centroid:
+                    room_line += (
+                        f" centroid: [{room.centroid[0]:.2f}, "
+                        f"{room.centroid[1]:.2f}, {room.centroid[2]:.2f}]"
+                    )
+                info_lines.append(room_line)
+                continue
+
             obj = scene_graph.get_object(obj_id)
             if not obj:
                 info_lines.append(f"- {obj_id}: not found in scene graph")

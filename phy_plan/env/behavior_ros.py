@@ -11,6 +11,7 @@
 #     sys.path.append(og_dir)
 
 import argparse
+import importlib.util
 from datetime import datetime
 from pathlib import Path
 
@@ -55,6 +56,36 @@ def choose_scene(scene_name, scene_file):
     return cfg
 
 
+def _resolve_dsg_publisher_class():
+    """Resolve DsgPublisher robustly to avoid `utils` namespace conflicts."""
+    try:
+        from utils.dsg_utils import DsgPublisher
+        return DsgPublisher
+    except ImportError as package_import_error:
+        module_path = Path(__file__).resolve().parent / "utils" / "dsg_utils.py"
+        if not module_path.exists():
+            raise ImportError(
+                f"DsgPublisher module not found at expected path: {module_path}"
+            ) from package_import_error
+
+        spec = importlib.util.spec_from_file_location(
+            "phy_plan_env_dsg_utils", str(module_path)
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError(
+                f"Unable to build import spec for: {module_path}"
+            ) from package_import_error
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        if not hasattr(module, "DsgPublisher"):
+            raise ImportError(
+                f"DsgPublisher not found in module: {module_path}"
+            ) from package_import_error
+
+        return module.DsgPublisher
+
+
 class ROSBehavior:
     def __init__(self, env, record_rosbag=False, publish_dsg=False, scene_name=None):
         self.env = env
@@ -95,7 +126,7 @@ class ROSBehavior:
         # DSG publisher (for phy_graph)
         self.dsg_publisher = None
         self.dsg_publish_counter = 0
-        self.dsg_publish_interval = 5  # 每 5 帧发布一次 DSG
+        self.dsg_publish_interval = 30 # 每 5 帧发布一次 DSG
         
         # ID 映射相关
         self.id_mapping = {}  # 大ID -> 小ID 的字典
@@ -164,16 +195,16 @@ class ROSBehavior:
             return
         
         try:
-            from util.dsg_utils import DsgPublisher
+            DsgPublisher = _resolve_dsg_publisher_class()
             self.dsg_publisher = DsgPublisher()
-            rospy.loginfo("DSG publishing enabled for phy_graph")
+            print("DSG publishing enabled for phy_graph")
         except ImportError as e:
-            rospy.logwarn(f"Failed to import DsgPublisher: {e}")
-            rospy.logwarn("DSG publishing disabled. Make sure spark_dsg and hydra_msgs are available.")
+            print(f"Failed to import DsgPublisher: {e}")
+            print("DSG publishing disabled. Make sure spark_dsg and hydra_msgs are available.")
             self.publish_dsg = False
             self.dsg_publisher = None
         except Exception as e:
-            rospy.logerr(f"Failed to initialize DsgPublisher: {e}")
+            print(f"Failed to initialize DsgPublisher: {e}")
             self.publish_dsg = False
             self.dsg_publisher = None
 
@@ -184,7 +215,7 @@ class ROSBehavior:
         try:
             self.bag.write(topic, msg, t=stamp)
         except Exception as e:
-            rospy.logwarn(f"Rosbag write failed for {topic}: {e}")
+            print(f"Rosbag write failed for {topic}: {e}")
 
     def _close_rosbag(self):
         """Close rosbag file if opened."""
@@ -418,9 +449,13 @@ class ROSBehavior:
             if self.dsg_publish_counter >= self.dsg_publish_interval:
                 self.dsg_publish_counter = 0
                 try:
-                    self.dsg_publisher.build_and_publish(self.env.scene, current_time)
+                    msg = self.dsg_publisher.build_and_publish(self.env.scene, current_time)
+                    if msg and self.bag:
+                        self._record_if_needed(
+                            self.dsg_publisher.topic, msg, msg.header.stamp
+                        )
                 except Exception as e:
-                    rospy.logwarn_throttle(10.0, f"Failed to publish DSG: {e}")
+                    print(f"Failed to publish DSG: {e}")
 
     def run(self):
         """

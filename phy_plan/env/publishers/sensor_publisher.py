@@ -48,7 +48,7 @@ class SensorPublisher:
         # DSG publisher (for phy_graph)
         self.dsg_publisher = None
         self.dsg_publish_counter = 0
-        self.dsg_publish_interval = 5  # 每 5 帧发布一次 DSG
+        self.dsg_publish_interval = 30 # 每 5 帧发布一次 DSG
     
     def setup_ros(self):
         """Setup ROS publishers."""
@@ -70,15 +70,15 @@ class SensorPublisher:
             parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             if parent_dir not in sys.path:
                 sys.path.insert(0, parent_dir)
-            from tools.dsg_utils import DsgPublisher
+            from utils.dsg_utils import DsgPublisher
             self.dsg_publisher = DsgPublisher()
-            rospy.loginfo("DSG publishing enabled for phy_graph")
+            print("DSG publishing enabled for phy_graph")
         except ImportError as e:
-            rospy.logwarn(f"Failed to import DsgPublisher: {e}")
-            rospy.logwarn("DSG publishing disabled. Make sure spark_dsg and hydra_msgs are available.")
+            print(f"Failed to import DsgPublisher: {e}")
+            print("DSG publishing disabled. Make sure spark_dsg and hydra_msgs are available.")
             self.dsg_publisher = None
         except Exception as e:
-            rospy.logerr(f"Failed to initialize DsgPublisher: {e}")
+            print(f"Failed to initialize DsgPublisher: {e}")
             self.dsg_publisher = None
     
     def publish(self, current_time, frame_id="camera_optical_frame", rosbag_manager=None, env_scene=None):

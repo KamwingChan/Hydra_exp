@@ -633,7 +633,18 @@ class LLMPlannerPipeline:
             print(f"  - {violation}")
         
         # Try replanning
-        return self._replan_with_physics_feedback(task_seq, instruction, validation, debug)
+        result = self._replan_with_physics_feedback(task_seq, instruction, validation, debug)
+        if result is None:
+            suggestions = []
+            for v in validation.violations:
+                s = self.planner.get_physics_suggestion(v, self._scene_graph)
+                if s:
+                    suggestions.append(s)
+            if suggestions:
+                print("\n[Robot] Here are some alternatives you can try:")
+                for s in suggestions:
+                    print(f"  - {s}")
+        return result
     
     def _replan_with_physics_feedback(
         self, 

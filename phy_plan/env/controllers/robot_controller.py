@@ -2,7 +2,7 @@
 Main robot controller that manages different control modes.
 
 Control modes:
-    - idle: robot does nothing
+    - idle: robot holds current pose (no drop)
     - teleop: keyboard teleoperation
     - primitive: semantic action primitives (G key: hardcoded/JSON, P key: LLM pipeline)
 """
@@ -52,19 +52,34 @@ class RobotController:
     
     def _get_idle_action(self):
         """
-        Generate idle action (all zeros).
+        Generate idle action that holds current pose (joints stay, base stops).
+        Prevents arm from dropping when switching to idle.
         
         Returns:
-            action: Zero action array
+            action: Action array (numpy) with no-op for joints and zero velocity for base.
         """
-        if self._idle_action is None:
-            try:
-                sample = self.robot.action_space.sample()
-                self._idle_action = np.zeros_like(sample)
-            except Exception:
-                # 兜底：如果 action_space 不工作，就返回标量 0
-                self._idle_action = 0.0
-        return self._idle_action
+        try:
+            control_dict = self.robot.get_control_dict()
+            action = np.zeros(self.robot.action_dim, dtype=np.float32)
+            for name, controller in self.robot._controllers.items():
+                action_idx = self.robot.controller_action_idx[name]
+                if name == "base":
+                    action[action_idx] = np.zeros(controller.command_dim, dtype=np.float32)
+                else:
+                    no_op = controller.compute_no_op_action(control_dict)
+                    if hasattr(no_op, "cpu"):
+                        no_op = no_op.cpu().numpy()
+                    action[action_idx] = np.asarray(no_op, dtype=np.float32)
+            return action
+        except Exception as e:
+            rospy.logwarn_throttle(5.0, f"Idle hold pose failed, fallback to zeros: {e}")
+            if self._idle_action is None:
+                try:
+                    sample = self.robot.action_space.sample()
+                    self._idle_action = np.zeros_like(sample)
+                except Exception:
+                    self._idle_action = np.zeros(self.robot.action_dim, dtype=np.float32)
+            return self._idle_action
     
     def set_mode(self, mode):
         """
