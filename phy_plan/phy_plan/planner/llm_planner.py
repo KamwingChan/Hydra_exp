@@ -6,14 +6,15 @@ Supports physics-aware planning with validation and replanning.
 """
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from ..core.agent import LLMAgent
 from ..core.scene_graph import SceneGraph
 from ..core.task import TaskSequence, Action, ActionType, Position
-from ..core.physics_agent import PhysicsAwareAgent, RobotCapability, ValidationResult, ConstraintViolation
+from ..core.physics_agent import PhysicsAwareAgent, RobotCapability, ValidationResult, ConstraintViolation, ConstraintType
 from ..prompts.task_planning_prompt import generate_task_planning_prompt
 from .spatial_resolver import SpatialResolver
 
@@ -42,6 +43,33 @@ class InfeasiblePlan:
     suggestions: List[str] = field(default_factory=list)
 
 
+def _get_observe_covered_objects(task_seq: TaskSequence) -> set:
+    """
+    Return the set of object IDs that have an observe action immediately before
+    their first pick/place/move action in the plan.
+
+    Used to skip MISSING_PHYSICS violations for objects that will be observed
+    at runtime before manipulation — physics data is unavailable at plan-time.
+    """
+    covered = set()
+    actions = task_seq.actions
+    for i, action in enumerate(actions):
+        if action.action_type == ActionType.OBSERVE and action.target_object:
+            obj_id = action.target_object
+            # Look ahead: if the next manipulation action targets the same object,
+            # physics will be available after observe executes.
+            for j in range(i + 1, len(actions)):
+                next_action = actions[j]
+                if next_action.action_type in (
+                    ActionType.NAVIGATE, ActionType.LOCATE
+                ):
+                    continue  # skip navigation-only steps
+                if next_action.target_object == obj_id:
+                    covered.add(obj_id)
+                break
+    return covered
+
+
 class LLMPlanner:
     """
     LLM task planner with physics-aware validation
@@ -62,7 +90,10 @@ class LLMPlanner:
         robot_capability: Optional[RobotCapability] = None,
         enable_physics_validation: bool = True,
         enable_spatial_resolver: bool = True,
-        max_replan_attempts: int = 2
+        enable_spatial_precheck: bool = False,
+        max_replan_attempts: int = 2,
+        prompt_generator: Optional[Callable[..., Tuple[str, str]]] = None,
+        compact_json_kwargs: Optional[Dict[str, bool]] = None
     ):
         """
         initialize planner
@@ -73,9 +104,20 @@ class LLMPlanner:
             robot_capability: Robot physical capability specification
             enable_physics_validation: Enable physics constraint validation
             enable_spatial_resolver: Enable automatic spatial reasoning
+            enable_spatial_precheck: Append ON-surface pre-check annotations to info_request
             max_replan_attempts: Maximum replanning attempts on validation failure
+            prompt_generator: Custom prompt generator function with the same signature as
+                              generate_task_planning_prompt. When None, the default is used.
+            compact_json_kwargs: Extra kwargs passed to SceneGraph.to_compact_json()
+                                 (e.g. {"include_physics": True, "include_position": True}).
         """
         self.agent = agent or LLMAgent(model=model)
+        
+        # Prompt generation (pluggable for baseline variants)
+        self._prompt_generator = prompt_generator or generate_task_planning_prompt
+        
+        # Compact JSON generation (pluggable for full-SG baseline)
+        self._compact_json_kwargs: Dict[str, bool] = compact_json_kwargs or {}
         
         # Physics validation
         self._enable_physics = enable_physics_validation
@@ -85,8 +127,12 @@ class LLMPlanner:
         self._enable_spatial = enable_spatial_resolver
         self._spatial_resolver = SpatialResolver() if enable_spatial_resolver else None
         
+        # Spatial pre-check (bbox-based ON-surface annotations)
+        self._enable_spatial_precheck = enable_spatial_precheck
+        
         # Replanning
         self._max_replan_attempts = max_replan_attempts
+        self._last_plan_replan_count = 0  # set by _validate_and_replan for metrics
     
     # ==================== Conversation Management ====================
     
@@ -153,12 +199,13 @@ class LLMPlanner:
         # Guard: plan() is stateless — clear any lingering conversation history
         # to prevent accidental chat() continuation after a plan() call.
         self.agent.reset()
+        self._last_plan_replan_count = 0
         
         # 1. generate prompt (compact format to save tokens)
         # Physical validation is done in backend by PhysicsAwareAgent
         # Detailed info is retrieved via candidate enrichment when needed
-        compact_json = scene_graph.to_compact_json()
-        system_content, user_prompt = generate_task_planning_prompt(
+        compact_json = scene_graph.to_compact_json(**self._compact_json_kwargs)
+        system_content, user_prompt = self._prompt_generator(
             compact_json, instruction, include_example
         )
         
@@ -395,10 +442,12 @@ class LLMPlanner:
         if validation.is_valid:
             if validation.warnings:
                 print(f"[LLMPlanner] Physics warnings: {validation.warnings}")
+            self._last_plan_replan_count = 0
             return None
         
         print(f"[LLMPlanner] Physics validation failed: {validation.reason}")
         
+        plan_replan_count = 0
         # Try replanning with constraint feedback
         for attempt in range(self._max_replan_attempts):
             print(f"[LLMPlanner] Replanning attempt {attempt + 1}/{self._max_replan_attempts}...")
@@ -411,12 +460,23 @@ class LLMPlanner:
                 continue
             
             if isinstance(replan_result, InfeasiblePlan):
+                self._last_plan_replan_count = plan_replan_count
                 return replan_result
             
-            # Validate the new plan
+            plan_replan_count += 1  # one successful replan round
+            # Validate the new plan; skip MISSING_PHYSICS for objects preceded by observe
             new_validation = self._physics_agent.validate_plan(replan_result, scene_graph)
-            if new_validation.is_valid:
-                print("[LLMPlanner] Replanning successful!")
+            observe_covered = _get_observe_covered_objects(replan_result)
+            effective_violations = [
+                v for v in new_validation.violations
+                if not (v.constraint_type == ConstraintType.MISSING_PHYSICS
+                        and v.object_id in observe_covered)
+            ]
+            if new_validation.warnings:
+                print(f"[LLMPlanner] Replanning warnings: {new_validation.warnings}")
+            if not effective_violations:
+                print("[LLMPlanner] ✅ Replanning successful! Physics constraints satisfied.")
+                self._last_plan_replan_count = plan_replan_count
                 return replan_result
             
             validation = new_validation
@@ -428,6 +488,7 @@ class LLMPlanner:
             if suggestion:
                 suggestions.append(suggestion)
         
+        self._last_plan_replan_count = plan_replan_count
         return InfeasiblePlan(
             reason=validation.reason,
             chain_of_thought=f"Replanning failed after {self._max_replan_attempts} attempts",
@@ -451,8 +512,8 @@ class LLMPlanner:
         # Build augmented instruction with constraint feedback
         augmented_instruction = f"{instruction}\n\n[CONSTRAINT FEEDBACK]\n{constraint_feedback}"
         
-        compact_json = scene_graph.to_compact_json()  # Use default compact format
-        system_content, user_prompt = generate_task_planning_prompt(
+        compact_json = scene_graph.to_compact_json(**self._compact_json_kwargs)
+        system_content, user_prompt = self._prompt_generator(
             compact_json, augmented_instruction, include_example=True
         )
         
@@ -587,14 +648,15 @@ class LLMPlanner:
             
             line = f"- {obj.category} ({obj_id})"
             
-            # Position info
-            if request_type in ["position", "both"] and obj.position:
+            # Position info — always include coordinates; spatial reasoning always benefits from them
+            if obj.position:
                 line += f" Position: [{obj.position[0]:.2f}, {obj.position[1]:.2f}, {obj.position[2]:.2f}]"
             
             # Physics info
             if request_type in ["physics", "both"] and obj.physical_properties:
                 props = obj.physical_properties
                 line += f" Weight: {props.weight_level}, Pushable: {props.pushable}"
+                line += f" Estimated Weight: {props.estimated_weight_kg}"
             
             # Room info
             if obj.room_id:
@@ -606,17 +668,99 @@ class LLMPlanner:
             
             info_lines.append(line)
         
-        # Add room centroid info for spatial reasoning
-        if request_type in ["position", "both"]:
-            for room in scene_graph.all_rooms():
-                if room.centroid:
-                    info_lines.append(
-                        f"- Room {room.category} ({room.room_id}) centroid: "
-                        f"[{room.centroid[0]:.2f}, {room.centroid[1]:.2f}, {room.centroid[2]:.2f}]"
-                    )
+        # Add room centroid info for spatial reasoning — always include regardless of request_type
+        for room in scene_graph.all_rooms():
+            if room.centroid:
+                info_lines.append(
+                    f"- Room {room.category} ({room.room_id}) centroid: "
+                    f"[{room.centroid[0]:.2f}, {room.centroid[1]:.2f}, {room.centroid[2]:.2f}]"
+                )
+        
+        if self._enable_spatial_precheck and request_type in ["position", "both"]:
+            precheck = self._compute_on_surface_precheck(object_ids, scene_graph)
+            if precheck:
+                info_lines.append("")
+                info_lines.append("[Spatial Pre-check] ON-surface analysis (bbox-based):")
+                info_lines.extend(precheck)
         
         return "\n".join(info_lines)
     
+    # ------------------------------------------------------------------
+    # Spatial pre-check: bbox-based ON-surface annotations (backup)
+    # ------------------------------------------------------------------
+
+    _SURFACE_CATEGORIES = {
+        "bed", "table", "desk", "counter", "countertop", "shelf",
+        "coffee_table", "dining_table", "nightstand", "dresser",
+        "bench", "sofa", "couch", "stove", "cabinet",
+    }
+
+    def _compute_on_surface_precheck(
+        self,
+        object_ids: List[str],
+        scene_graph: SceneGraph,
+        xy_margin: float = 0.10,
+    ) -> List[str]:
+        """Return [Spatial Pre-check] lines for each (object, surface) pair.
+
+        For every requested object, check all surfaces in the same room.
+        Uses bounding-box XY extent (+ margin) and Z height to decide.
+        Falls back to category-based radius estimate when bbox is unavailable.
+        """
+        lines: List[str] = []
+
+        surfaces = [
+            o for o in scene_graph.all_objects()
+            if o.category.lower().replace(" ", "_") in self._SURFACE_CATEGORIES
+        ]
+        if not surfaces:
+            return lines
+
+        for obj_id in object_ids:
+            if isinstance(obj_id, str) and obj_id.startswith("R("):
+                continue
+            obj = scene_graph.get_object(obj_id)
+            if not obj or not obj.position:
+                continue
+
+            ox, oy, oz = obj.position
+
+            for surf in surfaces:
+                if surf.node_id == obj.node_id:
+                    continue
+                if surf.room_id and obj.room_id and surf.room_id != obj.room_id:
+                    continue
+                if not surf.position:
+                    continue
+
+                sx, sy, sz = surf.position
+
+                if surf.bounding_box:
+                    mn = surf.bounding_box.min_point
+                    mx = surf.bounding_box.max_point
+                    in_xy = (
+                        mn[0] - xy_margin <= ox <= mx[0] + xy_margin
+                        and mn[1] - xy_margin <= oy <= mx[1] + xy_margin
+                    )
+                    above_z = oz > sz
+                    tag = "ON" if (in_xy and above_z) else "NOT-ON"
+                    lines.append(
+                        f"  {obj_id} vs {surf.category}({surf.node_id}): "
+                        f"bbox=[{mn[0]:.2f}..{mx[0]:.2f}, {mn[1]:.2f}..{mx[1]:.2f}], "
+                        f"obj_xy=[{ox:.2f},{oy:.2f}], Z {oz:.2f}>{sz:.2f}? "
+                        f"{'YES' if above_z else 'NO'} → {tag}"
+                    )
+                else:
+                    dist_xy = math.sqrt((ox - sx) ** 2 + (oy - sy) ** 2)
+                    above_z = oz > sz
+                    lines.append(
+                        f"  {obj_id} vs {surf.category}({surf.node_id}): "
+                        f"no bbox, XY dist={dist_xy:.2f}m, Z {oz:.2f}>{sz:.2f}? "
+                        f"{'YES' if above_z else 'NO'} → use LLM judgment"
+                    )
+
+        return lines
+
     def enrich_candidates(self, candidates: List[Dict[str, Any]], scene_graph: SceneGraph) -> None:
         """
         Fill in candidate object detailed information (Public API, Stage 2 Retrieval)
@@ -650,8 +794,11 @@ class LLMPlanner:
                             details.append(f"weight level:{props.weight_level}")
                         if props.pushable is not None:
                             details.append(f"pushable: {'yes' if props.pushable else 'no'}")
+                        if props.estimated_weight_kg is not None:
+                            details.append(f"estimated weight: {props.estimated_weight_kg}")
                         if details:
                             cand["phys_desc"] = ", ".join(details)
+        
                     
                         # 4. optional filling: description
                     if hasattr(full_obj, 'physical_properties') and full_obj.physical_properties and full_obj.physical_properties.description:
@@ -969,8 +1116,8 @@ class LLMPlanner:
         Returns:
             (TaskSequence 或 ClarificationRequest, response_dict, prompt_text) 元组
         """
-        compact_json = scene_graph.to_compact_json()
-        system_content, user_prompt = generate_task_planning_prompt(
+        compact_json = scene_graph.to_compact_json(**self._compact_json_kwargs)
+        system_content, user_prompt = self._prompt_generator(
             compact_json, instruction, include_example=True
         )
         
@@ -1003,7 +1150,7 @@ class LLMPlanner:
             TaskSequence, ClarificationRequest, or InfeasiblePlan
         """
         # Build replan prompt (ensure English for LLM)
-        compact_json = scene_graph.to_compact_json()
+        compact_json = scene_graph.to_compact_json(**self._compact_json_kwargs)
         
         replan_prompt = f"""{context_message}
 

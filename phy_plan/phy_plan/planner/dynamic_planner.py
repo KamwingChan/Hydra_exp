@@ -25,7 +25,7 @@ import json
 
 from ..core.scene_graph import SceneGraph
 from ..core.task import TaskSequence, Action, ActionType, TaskStatus
-from ..core.physics_agent import RobotCapability, ValidationResult
+from ..core.physics_agent import RobotCapability, ValidationResult, ConstraintType
 from ..core.change_detector import ChangeDetector, ChangeReport, ChangeType
 from ..input.phy_graph_subscriber import SceneGraphSubscriber
 from .llm_planner import LLMPlanner, ClarificationRequest, InfeasiblePlan
@@ -175,6 +175,7 @@ class DynamicPlannerPipeline:
         self._execution_index: int = 0
         self._replan_count: int = 0
         self._replan_events: List[ReplanEvent] = []
+        self._held_object_id: Optional[str] = None  # object currently held by robot
     
     # ==================== Public Methods (for PhyPlanPipeline) ====================
     
@@ -257,7 +258,13 @@ class DynamicPlannerPipeline:
         self.init_execution_state(result, instruction)
         
         return result
-    
+
+    def get_llm_planning_time_sec(self) -> float:
+        """Return LLM-only planning time from inner pipeline (excl. user I/O). For fair comparison with one-shot planners."""
+        if self._pipeline and hasattr(self._pipeline, "get_llm_planning_time_sec"):
+            return self._pipeline.get_llm_planning_time_sec()
+        return 0.0
+
     def init_execution_state(
         self,
         task_seq: TaskSequence,
@@ -344,15 +351,42 @@ class DynamicPlannerPipeline:
         # Success path
         action.status = TaskStatus.COMPLETED
         self._execution_index += 1
-        
+
+        # Update held object state
+        if action.action_type == ActionType.PICK and action.target_object:
+            self._held_object_id = action.target_object
+        elif action.action_type in (ActionType.PLACE, ActionType.PLACE_INSIDE):
+            self._held_object_id = None
+
+        # Narrow change detector tracking to remaining actions only,
+        # and exclude the currently held object (it moves with the robot)
+        if self._change_detector and self._current_plan:
+            remaining_actions = self._current_plan.actions[self._execution_index:]
+            remaining_objects = self._extract_relevant_objects_from_actions(remaining_actions)
+            if self._held_object_id:
+                remaining_objects = [o for o in remaining_objects if o != self._held_object_id]
+            self._change_detector.set_task_relevant_objects(remaining_objects, self._current_scene_graph)
+
+        # After OBSERVE: re-validate remaining plan against updated physics
+        if action.action_type == ActionType.OBSERVE:
+            replan_result = self._handle_observe_physics_revalidate(instruction, on_replan)
+            if replan_result is not None:
+                return replan_result  # Replanned due to physics update after observe
+
         # Check scene after certain action types
         if self._should_check_scene(action):
-            change_detected = self._check_and_handle_scene_change(
-                instruction, on_replan
+            # Skip scene change check when task is complete (no remaining actions)
+            remaining_actions = (
+                self._current_plan.actions[self._execution_index:]
+                if self._current_plan else []
             )
-            if change_detected and self._current_plan is not None:
-                return self._current_plan  # New plan from scene change
-            # If change_detected and _current_plan is None, replan failed
+            if remaining_actions:
+                change_detected = self._check_and_handle_scene_change(
+                    instruction, on_replan
+                )
+                if change_detected and self._current_plan is not None:
+                    return self._current_plan  # New plan from scene change
+                # If change_detected and _current_plan is None, replan failed
         
         return None  # No replan needed, continue normally
     
@@ -377,7 +411,7 @@ class DynamicPlannerPipeline:
         Returns:
             TaskSequence if successful, InfeasiblePlan otherwise
         """
-        compact_json = scene_graph.to_compact_json()
+        compact_json = scene_graph.to_compact_json(**self.planner._compact_json_kwargs)
         replan_prompt = (
             f"{context_message}\n\n"
             f"Updated Scene Graph (supersedes the scene graph in the system prompt):\n"
@@ -678,6 +712,106 @@ class DynamicPlannerPipeline:
         
         return True
     
+    def _handle_observe_physics_revalidate(
+        self,
+        instruction: str,
+        on_replan: Optional[Callable[[ReplanEvent], None]]
+    ) -> Optional[TaskSequence]:
+        """
+        After an OBSERVE action completes, re-validate the remaining plan against
+        the updated scene graph (which now has physical properties for the observed
+        object).
+
+        If the remaining plan has a MISSING_PHYSICS violation (i.e. the observed
+        object turned out to be too heavy), trigger replanning.  If validation
+        passes (including cases where a later observe step will cover the object),
+        return None so execution continues normally.
+
+        Returns:
+            New TaskSequence if replanned, None if no replan needed.
+        """
+        if not self._current_plan or not self.planner:
+            return None
+
+        new_sg = self._get_latest_scene_graph()
+        if new_sg is None:
+            new_sg = self._current_scene_graph
+
+        remaining_actions = self._current_plan.actions[self._execution_index:]
+        if not remaining_actions:
+            return None
+
+        remaining_seq = TaskSequence(
+            task_name=self._current_plan.task_name,
+            actions=remaining_actions
+        )
+
+        validation = self.planner.validate_plan(remaining_seq, new_sg)
+
+        # Filter out MISSING_PHYSICS violations for objects that still have an
+        # upcoming observe in the remaining plan — those will be handled later.
+        from .llm_planner import _get_observe_covered_objects
+        observe_covered = _get_observe_covered_objects(remaining_seq)
+        real_violations = [
+            v for v in validation.violations
+            if not (v.constraint_type == ConstraintType.MISSING_PHYSICS
+                    and v.object_id in observe_covered)
+        ]
+
+        if not real_violations:
+            if validation.warnings and self._debug:
+                print(f"[DynamicPipeline] Post-observe physics warnings: {validation.warnings}")
+            return None  # Plan still valid after observe update
+
+        # Physics violation found after observe — replan
+        if self._debug:
+            print(f"[DynamicPipeline] Post-observe physics violation: "
+                  f"{[str(v) for v in real_violations]}")
+
+        if self._replan_count >= self._max_replan:
+            if self._debug:
+                print(f"[DynamicPipeline] Max replan attempts reached, cannot replan after observe")
+            return None
+
+        self._replan_count += 1
+        violation_desc = "; ".join(str(v) for v in real_violations)
+        context = (
+            f"[PHYSICS UPDATE after observe]\n"
+            f"After observing the object, physical properties are now known and "
+            f"the remaining plan is infeasible:\n{violation_desc}\n"
+            f"Please replan to avoid the physically infeasible action."
+        )
+
+        result = self._validated_replan(context, new_sg)
+
+        event = ReplanEvent(
+            trigger=ReplanTrigger.PHYSICS_VIOLATION,
+            timestamp=time.time(),
+            reason=f"Post-observe physics: {violation_desc[:80]}",
+            old_plan_progress=self._current_plan.progress if self._current_plan else 0,
+            new_plan_actions=len(result.actions) if isinstance(result, TaskSequence) else 0
+        )
+        self._replan_events.append(event)
+        if on_replan:
+            on_replan(event)
+
+        if isinstance(result, InfeasiblePlan):
+            self._current_plan = None
+            return None
+
+        self._current_plan = result
+        self._current_scene_graph = new_sg
+        self._execution_index = 0
+
+        relevant_objects = self._extract_relevant_objects(result)
+        self._change_detector.set_task_relevant_objects(relevant_objects)
+        self._change_detector.update_baseline(new_sg)
+
+        if self._debug:
+            print(f"[DynamicPipeline] Replanned after observe with {len(result.actions)} actions")
+
+        return result
+
     def _handle_scene_change_replan(
         self,
         instruction: str,
@@ -767,7 +901,20 @@ class DynamicPlannerPipeline:
                 relevant.add(params["target_object"])
         
         return list(relevant)
-    
+
+    @staticmethod
+    def _extract_relevant_objects_from_actions(actions: List[Action]) -> List[str]:
+        """Extract task-relevant object IDs from a subset of actions (e.g. remaining plan)"""
+        relevant = set()
+        for action in actions:
+            if action.target_object:
+                relevant.add(action.target_object)
+            params = action.params or {}
+            for key in ("object_id", "surface_id", "target_object"):
+                if key in params:
+                    relevant.add(params[key])
+        return list(relevant)
+
     # ==================== Convenience Methods ====================
     
     def plan_only(
@@ -817,9 +964,9 @@ class DynamicPlannerPipeline:
         ensuring conversation history is shared between initial planning
         and replanning.
         """
-        # Generate system prompt using existing prompt generator
-        # Parameters: scene_graph_compact, instruction, include_example
-        system_prompt, _ = generate_task_planning_prompt(
+        # Generate system prompt using planner's prompt generator
+        # (respects custom prompt_generator set for baseline variants)
+        system_prompt, _ = self.planner._prompt_generator(
             scene_graph_compact="",  # Will be provided in user messages
             instruction="",
             include_example=True

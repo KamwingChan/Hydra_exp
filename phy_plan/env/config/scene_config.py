@@ -24,6 +24,9 @@ def choose_scene(scene_name, scene_file, semantic_segmentation=True, trav_map_pa
     }
     if trav_map_path is not None:
         scene_cfg["trav_map_resolution"] = trav_map_resolution
+        print(f"Using custom trav map: {trav_map_path}")
+    else:
+        print(f"Using default trav map")
     cfg = {
         "render": {
             "viewer_width": gm.DEFAULT_VIEWER_WIDTH,

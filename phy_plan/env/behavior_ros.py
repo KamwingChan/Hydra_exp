@@ -494,6 +494,14 @@ class ROSBehavior:
     def stop(self):
         """stop running"""
         self.is_running = False
+
+        if self.dsg_publisher:
+            try:
+                self.dsg_publisher.pub.unregister()
+            except Exception:
+                pass
+            self.dsg_publisher = None
+
         self._close_rosbag()
 
 

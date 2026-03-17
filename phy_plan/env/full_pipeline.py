@@ -89,6 +89,14 @@ class ExperimentBehavior:
                 baseline=baseline_label,
             )
             rospy.loginfo(f"[ExpMode] MetricsCollector created (baseline={baseline_label})")
+
+        # Task recorder (always available, records when active)
+        from phy_plan.visualization.task_recorder import TaskRecorder
+        self._recorder = TaskRecorder(
+            output_dir=os.path.join(os.path.dirname(__file__), "exp_results")
+        )
+        self._scene_graph_subscriber = None  # set when pipeline created (P key)
+
         # Robot and sensor setup
         self.robot = self.env.robots[0]
         pos, orn = self.robot.get_position_orientation()
@@ -243,9 +251,11 @@ class ExperimentBehavior:
                 )
             else:
                 subscriber = SceneGraphSubscriber(topic="/phy_graph/scene_graph_full")
-            
+
+            self._scene_graph_subscriber = subscriber  # for T-key recording
+
             llm_pipeline = LLMPlannerPipeline(
-                model="gpt-4o",
+                model="gpt-5.2",
                 subscriber=subscriber,
                 enable_physics_validation=True,
                 enable_spatial_resolver=True
@@ -288,6 +298,9 @@ class ExperimentBehavior:
                     self._collector.start_planning()
                     result = _orig_run(instruction=instruction, debug=debug)
                     self._collector.end_planning()
+                    # planning_time = LLM-only (excl. user clarification) for fair comparison with CM
+                    if hasattr(dynamic_pipeline, "get_llm_planning_time_sec"):
+                        self._collector._current_task.planning_time = dynamic_pipeline.get_llm_planning_time_sec()
 
                     # Record plan result
                     if phy_pipeline.current_task is not None:
@@ -308,11 +321,14 @@ class ExperimentBehavior:
 
                     if self._collector and self._collector._current_task:
                         self._collector._current_task.execution_time = exec_time
-                        # Replan count from dynamic pipeline
-                        if hasattr(dynamic_pipeline, '_replan_count'):
-                            self._collector._current_task.replan_count = dynamic_pipeline._replan_count
-                            if dynamic_pipeline._replan_count > 0 and success:
-                                self._collector._current_task.recovery_success = True
+                        # Replan count: planning-stage (physics) + execution-stage (failure/scene/observe)
+                        plan_time_replans = getattr(
+                            getattr(llm_pipeline, "planner", None), "_last_plan_replan_count", 0
+                        )
+                        exec_replans = getattr(dynamic_pipeline, "_replan_count", 0)
+                        self._collector._current_task.replan_count = plan_time_replans + exec_replans
+                        if (plan_time_replans + exec_replans) > 0 and success:
+                            self._collector._current_task.recovery_success = True
 
                         print("\n[ExpMode] Task execution complete. Starting human judgment...")
                         self._collector.prompt_human_judgment()
@@ -324,12 +340,77 @@ class ExperimentBehavior:
 
                 phy_pipeline.run = _wrapped_run
                 phy_pipeline._on_task_complete = _wrapped_on_task_complete
-            
+
+            # ── TaskRecorder hooks (always active) ─────────────────────── #
+            _rec = self._recorder
+            _prev_run = phy_pipeline.run
+            _prev_step_cb = phy_pipeline._on_step_complete
+            _prev_task_cb = phy_pipeline._on_task_complete
+
+            def _rec_wrapped_run(instruction=None, debug=True):
+                _rec.start_recording(instruction or "")
+                result = _prev_run(instruction=instruction, debug=debug)
+                # Record init frame after planning completes
+                task = phy_pipeline.current_task
+                plan_dicts = [a.to_dict() for a in task.actions] if task else None
+                cot = task.metadata.get("chain_of_thought", "") if task and task.metadata else ""
+                _rec.record_init(
+                    scene_graph_dict=self._get_sg_dict(subscriber),
+                    robot_pose=self._get_robot_pose_list(),
+                    plan=plan_dicts,
+                    chain_of_thought=cot,
+                    held_objects=self._get_held_objects(),
+                )
+                return result
+
+            def _rec_wrapped_step(step_index, step, success, error):
+                # Grab state *before* replan may fire
+                action_dict = None
+                if (phy_pipeline._executable_actions
+                        and step_index < len(phy_pipeline._executable_actions)):
+                    action_dict = phy_pipeline._executable_actions[step_index].to_dict()
+                _rec.record_action_complete(
+                    action_dict=action_dict or {},
+                    action_index=step_index,
+                    success=success,
+                    error=error,
+                    scene_graph_dict=self._get_sg_dict(subscriber),
+                    robot_pose=self._get_robot_pose_list(),
+                    held_objects=self._get_held_objects(),
+                )
+                replan_count_before = getattr(dynamic_pipeline, "_replan_count", 0)
+                _prev_step_cb(step_index, step, success, error)
+                replan_count_after = getattr(dynamic_pipeline, "_replan_count", 0)
+                if replan_count_after > replan_count_before:
+                    new_task = phy_pipeline.current_task
+                    new_plan = [a.to_dict() for a in new_task.actions] if new_task else None
+                    cot = (new_task.metadata.get("chain_of_thought", "")
+                           if new_task and new_task.metadata else "")
+                    _rec.record_replan(
+                        reason="step_triggered",
+                        new_plan=new_plan,
+                        scene_graph_dict=self._get_sg_dict(subscriber),
+                        robot_pose=self._get_robot_pose_list(),
+                        chain_of_thought=cot,
+                        held_objects=self._get_held_objects(),
+                    )
+
+            def _rec_wrapped_task_complete(success, error):
+                _prev_task_cb(success, error)
+                _rec.stop_recording()
+                if _rec._frames:
+                    _rec.save()
+
+            phy_pipeline.run = _rec_wrapped_run
+            phy_pipeline._on_step_complete = _rec_wrapped_step
+            phy_pipeline._on_task_complete = _rec_wrapped_task_complete
+
             rospy.loginfo("[Pipeline Factory] Pipeline ready:")
             rospy.loginfo("  - SceneGraphSubscriber listening on /phy_graph/scene_graph_full")
             rospy.loginfo("  - LLMPlannerPipeline (gpt-4o, physics+spatial)")
             replan_status = "disabled (open-loop)" if self.open_loop else "enabled"
             rospy.loginfo(f"  - DynamicPlannerPipeline (replanning {replan_status})")
+            rospy.loginfo("  - TaskRecorder active")
             
             return phy_pipeline
         
@@ -356,9 +437,9 @@ class ExperimentBehavior:
         Position is a placeholder until determined experimentally.
         """
         def _on_t_key_pressed():
-            target_name = "game_console"
+            target_name = "box_of_almond_milk"
             # Placeholder position — update once determined
-            new_pos = [0.0, 0.0, 0.5]
+            new_pos = [-4.3783, 7.85, 0.8]
             rospy.loginfo(f"[T key] Dynamic event: moving '{target_name}' to {new_pos}")
             try:
                 scene = self.env.scene
@@ -369,6 +450,7 @@ class ExperimentBehavior:
                         break
                 if target_obj is not None:
                     target_obj.set_position_orientation(position=new_pos)
+                    target_obj.in_rooms = ["meeting_room_0"]
                     rospy.loginfo(f"[T key] Moved '{target_obj.name}' to {new_pos}")
                 else:
                     rospy.logwarn(f"[T key] Object '{target_name}' not found in scene")
@@ -407,6 +489,17 @@ class ExperimentBehavior:
                 # OmniGibson simulation step
                 self.env.step(action)
                 
+                if self._recorder.is_recording:
+                    sg_dict = None
+                    if (self._scene_graph_subscriber is not None
+                            and self._scene_graph_subscriber.has_update()):
+                        sg_dict = self._get_sg_dict(self._scene_graph_subscriber)
+                    self._recorder.record_scene_update(
+                        scene_graph_dict=sg_dict,
+                        robot_pose=self._get_robot_pose_list(),
+                        held_objects=self._get_held_objects(),
+                    )
+                
                 # Publish sensor data
                 current_time = rospy.Time.now()
                 self.sensor_publisher.publish(
@@ -428,6 +521,64 @@ class ExperimentBehavior:
         
         rospy.loginfo("ROSBehavior main loop ended.")
     
+    def _get_robot_pose_list(self):
+        """Return robot [x,y,z,qx,qy,qz,qw] as plain Python list (JSON-safe)."""
+        try:
+            pos, orn = self.robot.get_position_orientation()
+            pos_np = pos.cpu().numpy() if hasattr(pos, 'cpu') else pos
+            orn_np = orn.cpu().numpy() if hasattr(orn, 'cpu') else orn
+            return [float(v) for v in pos_np] + [float(v) for v in orn_np]
+        except Exception:
+            return None
+
+    def _get_sg_dict(self, subscriber):
+        """Snapshot the latest scene graph as a plain dict (JSON-safe)."""
+        try:
+            sg = subscriber.get_latest()
+            if sg is not None:
+                return sg.to_dict()
+        except Exception:
+            pass
+        return None
+
+    def _get_held_objects(self):
+        """Return list of objects currently held by the robot via OG assisted-grasp API.
+
+        Each entry: {"name": str, "pose": [x,y,z,qx,qy,qz,qw], "node_id": str|None}.
+        node_id is resolved from scene graph for exact ghost-avoidance in Rerun.
+        Returns None when nothing is held (avoids bloating JSON with empty lists).
+        """
+        try:
+            held = []
+            sg_dict = self._get_sg_dict(self._scene_graph_subscriber) if self._scene_graph_subscriber else None
+            sg_objects = (sg_dict or {}).get("objects", [])
+
+            for arm in self.robot.arm_names:
+                obj = self.robot._ag_obj_in_hand.get(arm)
+                if obj is not None:
+                    pos, orn = obj.get_position_orientation()
+                    pos_np = pos.cpu().numpy() if hasattr(pos, 'cpu') else pos
+                    orn_np = orn.cpu().numpy() if hasattr(orn, 'cpu') else orn
+                    node_id = None
+                    obj_base = obj.name.rsplit("_", 1)[0] if "_" in obj.name and obj.name.split("_")[-1].isdigit() else obj.name
+                    for sg_obj in sg_objects:
+                        cat = sg_obj.get("category", "")
+                        if not cat:
+                            continue
+                        cn = cat.lower().replace("_", "").replace(" ", "")
+                        bn = obj_base.lower().replace("_", "").replace(" ", "")
+                        if cn in bn or bn in cn:
+                            node_id = sg_obj.get("node_id")
+                            break
+                    held.append({
+                        "name": obj.name,
+                        "pose": [float(v) for v in pos_np] + [float(v) for v in orn_np],
+                        "node_id": node_id,
+                    })
+            return held if held else None
+        except Exception:
+            return None
+
     def stop(self):
         """Stop running and cleanup."""
         self.is_running = False
@@ -482,7 +633,7 @@ Examples:
         help="Publish DSG messages for phy_graph (requires spark_dsg and hydra_msgs)",
     )
     parser.add_argument("--scene_graph_file", type=str, 
-                        default="scene_graph_enhanced.json",
+                        default="office_sg.json",
                         help="Path to scene graph JSON file")
     parser.add_argument("--online_mode", type=bool, 
                         default=False,
@@ -522,20 +673,32 @@ Examples:
     from phy_plan.executor.behavior_action_api import ExecutionMode
     execution_mode = ExecutionMode.SYMBOLIC if args.execution_mode == "symbolic" else ExecutionMode.FULL
     
+
+    if args.exp_mode:
+        scene = "Rs_int"
+        scene_file = "/home/kamwing/catkin_ws/src/phy_plan/env/config/scene_configs/office_vendor_machine_0.json"
+        args.trav_map = "/home/kamwing/catkin_ws/src/phy_plan/env/config/scene_configs/office.png"
+        args.online_mode = True
+        args.publish_dsg = True
+        args.semantic_segmentation = False
+    else:
+        scene = args.scene
+        scene_file = args.scene_file
+        
     env = og.Environment(choose_scene(
-        args.scene, args.scene_file, args.semantic_segmentation,
+        scene, scene_file, args.semantic_segmentation,
         trav_map_path=args.trav_map, trav_map_resolution=0.01,
     ))
     if args.trav_map:
         try:
             inject_custom_trav_map(env, args.trav_map, custom_resolution=0.01)
-            rospy.loginfo(f"Using custom trav map: {args.trav_map}")
+            print(f"Using custom trav map: {args.trav_map}")
         except Exception as e:
-            rospy.logerr(f"Failed to inject custom trav map: {e}")
+            print(f"Failed to inject custom trav map: {e}")
             raise
     experiment_behavior = ExperimentBehavior(
         env,
-        scene_name=args.scene,
+        scene_name=scene,
         record_rosbag=args.rosbag,
         publish_dsg=args.publish_dsg,
         semantic_segmentation=args.semantic_segmentation,

@@ -9,8 +9,9 @@ Architecture:
 """
 
 import json
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from ..core.agent import LLMAgent
 from ..core.scene_graph import SceneGraph
@@ -44,7 +45,9 @@ class LLMPlannerPipeline:
         scene_file: Optional[Union[str, Path]] = None,
         robot_capability: Optional[RobotCapability] = None,
         enable_physics_validation: bool = True,
-        enable_spatial_resolver: bool = True
+        enable_spatial_resolver: bool = True,
+        prompt_generator: Optional[Callable[..., Tuple[str, str]]] = None,
+        compact_json_kwargs: Optional[Dict[str, bool]] = None
     ):
         """
         Initialize Pipeline
@@ -59,6 +62,8 @@ class LLMPlannerPipeline:
             robot_capability: Robot physical capability specification (for physics validation)
             enable_physics_validation: Enable physics constraint validation
             enable_spatial_resolver: Enable automatic spatial reference resolution
+            prompt_generator: Custom prompt generator (passed through to LLMPlanner)
+            compact_json_kwargs: Extra kwargs for SceneGraph.to_compact_json() (passed through to LLMPlanner)
         """
         self.agent = LLMAgent(model=model, api_key=api_key, base_url=base_url)
         self.planner = LLMPlanner(
@@ -66,7 +71,9 @@ class LLMPlannerPipeline:
             model=model,
             robot_capability=robot_capability,
             enable_physics_validation=enable_physics_validation,
-            enable_spatial_resolver=enable_spatial_resolver
+            enable_spatial_resolver=enable_spatial_resolver,
+            prompt_generator=prompt_generator,
+            compact_json_kwargs=compact_json_kwargs
         )
         self.verbose = verbose
         
@@ -85,6 +92,8 @@ class LLMPlannerPipeline:
         self._provided_objects: List[str] = []  # Track which objects info was provided for
         self._pending_response: Optional[str] = None  # Buffered LLM response from handlers
         self._replan_mode: bool = False  # True during replan to preserve conversation history
+        # LLM-only time (excl. user clarification / confirmation) for fair comparison with one-shot planners
+        self._llm_planning_time_sec: float = 0.0
         
         # Load static scene graph if file path provided
         if scene_file and not self._use_subscriber:
@@ -224,6 +233,7 @@ class LLMPlannerPipeline:
         Returns:
             Final TaskSequence
         """
+        self._llm_planning_time_sec = 0.0
         self._print_header()
         
         # Get initial instruction
@@ -264,10 +274,8 @@ class LLMPlannerPipeline:
     
     def _init_conversation(self, instruction: str) -> None:
         """Initialize conversation with system prompt"""
-        from ..prompts.task_planning_prompt import generate_task_planning_prompt
-        
-        compact_json = self._scene_graph.to_compact_json()
-        system_content, _ = generate_task_planning_prompt(
+        compact_json = self._scene_graph.to_compact_json(**self.planner._compact_json_kwargs)
+        system_content, _ = self.planner._prompt_generator(
             compact_json,
             instruction,
             include_example=True
@@ -285,17 +293,27 @@ class LLMPlannerPipeline:
         self._init_conversation(instruction)
         return self._get_llm_response(instruction, is_first=True, debug=debug)
     
+    def _timed_chat(self, prompt: str) -> str:
+        """Call LLM and accumulate time for planning_time (LLM-only, excl. user I/O)."""
+        t0 = time.time()
+        out = self.planner.chat(prompt)
+        self._llm_planning_time_sec += time.time() - t0
+        return out
+
+    def get_llm_planning_time_sec(self) -> float:
+        """Return accumulated LLM-only planning time (excl. user clarification/confirmation)."""
+        return getattr(self, "_llm_planning_time_sec", 0.0)
+
     def _get_llm_response(self, prompt: str, is_first: bool = False, debug: bool = True) -> str:
         """Get LLM response via chat"""
         if is_first:
-            from ..prompts.task_planning_prompt import generate_task_planning_prompt
-            compact_json = self._scene_graph.to_compact_json()
-            _, user_prompt = generate_task_planning_prompt(compact_json, prompt, include_example=True)
+            compact_json = self._scene_graph.to_compact_json(**self.planner._compact_json_kwargs)
+            _, user_prompt = self.planner._prompt_generator(compact_json, prompt, include_example=True)
             prompt = user_prompt
             self._conversation_started = True
         
         print(f"[LLMPlanner] Calling LLM...")
-        response_text = self.planner.chat(prompt)
+        response_text = self._timed_chat(prompt)
         
         if debug:
             print("\n" + "="*40 + " DEBUG: LLM RESPONSE " + "="*40)
@@ -367,6 +385,28 @@ class LLMPlannerPipeline:
                     continue
                 # Otherwise it's handled, continue loop
                 continue
+            
+            # Backend guard: if LLM skipped info_request but plan uses ambiguous objects
+            if not self._info_provided:
+                ambiguous_ids = self.planner._check_ambiguous_objects(
+                    response_dict, self._scene_graph
+                )
+                if ambiguous_ids:
+                    if debug:
+                        print(f"[Pipeline] Backend guard: ambiguous objects {ambiguous_ids}")
+                    object_info = self.planner._build_object_info(
+                        ambiguous_ids, "position", self._scene_graph
+                    )
+                    guard_prompt = (
+                        f"[SYSTEM GUARD] Your plan uses objects that have multiple candidates "
+                        f"of the same category in the same room. You MUST consider all of them:\n"
+                        f"{object_info}\n\n"
+                        f"Please re-evaluate and generate the correct plan (use info_request if needed, or choose based on the positions above)."
+                    )
+                    response_text = self._timed_chat(guard_prompt)
+                    self._pending_response = response_text
+                    self._info_provided = True
+                    continue
             
             # Convert to TaskSequence
             task_seq = self.planner.convert_to_task_sequence(
@@ -504,11 +544,11 @@ class LLMPlannerPipeline:
         # Check if info was already provided via info_request
         if self._info_provided:
             # Simplified prompt - LLM already has the detailed info
-            response_text = self.planner.chat(f"User selected: {user_answer}")
+            response_text = self._timed_chat(f"User selected: {user_answer}")
         else:
             # Provide full RAG context (candidates + room centroids)
             rag_context = self._build_rag_context(candidates, current_instruction)
-            response_text = self.planner.chat(f"{rag_context}\nUser Answer: {user_answer}")
+            response_text = self._timed_chat(f"{rag_context}\nUser Answer: {user_answer}")
         
         self._pending_response = response_text  # Store for next loop iteration
         return "continue"
@@ -662,7 +702,7 @@ class LLMPlannerPipeline:
         )
         
         print(f"\n[LLMPlanner] Replanning with physics constraints...")
-        replan_response = self.planner.chat(augmented_prompt)
+        replan_response = self._timed_chat(augmented_prompt)
         
         if debug:
             print("\n" + "="*40 + " DEBUG: REPLAN RESPONSE " + "="*40)
@@ -680,6 +720,12 @@ class LLMPlannerPipeline:
             print(f"\n❌ Replanning also failed: {replan_dict.get('infeasible_reason')}")
             return None
         
+        plan = replan_dict.get("plan", [])
+        if not plan:
+            reason = replan_dict.get("chain_of_thought", "No plan generated (empty plan).")
+            print(f"\n❌ Replanning failed: LLM returned empty plan. {reason}")
+            return None
+
         # Convert to TaskSequence
         new_task_seq = self.planner.convert_to_task_sequence(
             replan_dict, 

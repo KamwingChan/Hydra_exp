@@ -63,6 +63,13 @@ class PhysicalProperties:
     estimated_weight_kg: str = ""        # estimated weight range (e.g. "5-10")
     inference_confidence: int = -1       # inference confidence (image score 0-100)
     
+    STALE_CONFIDENCE_THRESHOLD: int = 50
+    
+    @property
+    def is_stale(self) -> bool:
+        """True when confidence is known but below the reliability threshold."""
+        return 0 <= self.inference_confidence < self.STALE_CONFIDENCE_THRESHOLD
+    
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "PhysicalProperties":
         if not d:
@@ -134,8 +141,10 @@ class ObjectNode:
             "room_id": self.room_id
         }
         
-        if self.physical_properties:
-            result["has_physics"] = True
+        has_phys = bool(self.physical_properties)
+        if has_phys and self.physical_properties.is_stale:
+            has_phys = False
+        result["has_physics"] = has_phys
         
         # Add position for spatial reasoning (optional, increases token usage)
         if include_position and self.position:

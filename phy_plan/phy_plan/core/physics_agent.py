@@ -191,8 +191,15 @@ class PhysicsAwareAgent:
         # Get physical properties
         phys = obj.physical_properties
         if not phys:
-            # No physical properties - generate warning but allow
-            return True, f"object {obj_id} ({obj.category}) missing physical properties, cannot be validated", None
+            # No physical properties — observe required before any manipulation
+            return False, "", ConstraintViolation(
+                action_index=action_index,
+                action=action,
+                constraint_type=ConstraintType.MISSING_PHYSICS,
+                object_id=obj_id,
+                message=f"object {obj_id} ({obj.category}) has no physical properties (has_physics=false), "
+                        f"observe required before pick/place"
+            )
         
         # Check based on action type
         if action.action_type == ActionType.PICK:
